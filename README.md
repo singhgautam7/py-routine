@@ -45,9 +45,45 @@ codebase into sync and async halves.
 The timing matters too. Free threaded CPython (3.13 experimental, officially
 supported in 3.14) removes the GIL, which means threads finally run Python
 code in parallel. This library is written for that world: pure Python, no C
-extension, one OS thread per routine, and every blocking primitive parks on
+extension, pooled worker threads, and every blocking primitive parks on
 a condition instead of polling. On a free threaded build, CPU bound fan out
 across routines actually uses your cores.
+
+## Why pyroutine and not threading, asyncio or multiprocessing
+
+The short version, every row measured on this repo's own benchmarks
+(commands below, full tables in the Benchmarks section, all on Python
+3.14.6 free threaded unless stated):
+
+| you are doing | reach for | measured reason |
+|---|---|---|
+| parallel CPU work on shared data (3.13t/3.14t) | **pyroutine, clear winner** | 4.3x over sequential and 25 to 50% ahead of multiprocessing, because nothing is pickled to child processes. asyncio is stuck on one core, 4.6x slower |
+| streaming pipelines (producer to consumer) | **pyroutine** | `Chan` is about 2x faster than `queue.Queue` and edges out `asyncio.Queue`, on every build including 3.9+ GIL |
+| request/response coordination | **pyroutine** | rendezvous round trips match threading and beat asyncio 3x |
+| spawning many short lived tasks | pyroutine over threading, asyncio overall | 9x faster than `threading.Thread` (pooled workers), still 4x behind asyncio tasks |
+| I/O bound fan out | any of the three | all within a few percent, the wait is the workload. pyroutine just reads best |
+| CPU work on a GIL build (3.12 and older) | multiprocessing, honestly | nothing thread based can beat the GIL there |
+
+And where the speed is a tie, the API is not. Channels with `select`,
+`WaitGroup`/`ErrGroup`, contexts with deadlines, timers as channels,
+directional endpoints, exceptions that cannot vanish silently:
+threading has none of that, and asyncio offers its equivalents only if
+you rewrite your codebase async. pyroutine works with every blocking
+library you already use.
+
+Verify all of it on your machine:
+
+```
+# the six scenario suite vs threading, asyncio and multiprocessing
+python benchmarks/run.py
+python3.14t benchmarks/run.py               # free threaded build
+
+# the multiprocessing pickling tax, in isolation
+python3.14t examples/shared_memory_showcase.py
+
+# one identical I/O + CPU pipeline written in all three frameworks
+python examples/benchmark_comparison.py
+```
 
 ## Install
 
@@ -128,6 +164,37 @@ import pyroutine
 The warning also respects the `NO_COLOR` convention (color is dropped)
 and standard `warnings` filters against the `GILEnabledWarning` category
 still apply if you prefer that machinery.
+
+## Python versions: what changes where
+
+One wheel, zero code changes, but the interpreter decides how much
+parallelism you get. The dependency is not the version number alone, it
+is whether the build has the GIL:
+
+| interpreter | GIL | routines run | what pyroutine gives you there |
+|---|---|---|---|
+| 3.9 to 3.12 | always on | interleaved, one core | the Go API and its wins that never needed parallelism: 2x `queue.Queue` streaming, fast rendezvous, 4x faster spawning than `threading.Thread`, select/context/errgroup. For CPU parallelism, keep multiprocessing |
+| 3.13, 3.14 regular build | on | interleaved, one core | exactly the same as 3.12, a regular 3.13/3.14 install changes nothing |
+| 3.13t, 3.14t free threaded | off | parallel, all cores | everything above, plus CPU bound routines actually scale and shared memory parallel work overtakes multiprocessing |
+
+How the same benchmarks move between 3.12 (GIL) and 3.14t on an 11 core
+machine, from `benchmarks/run.py`:
+
+| scenario | 3.12 GIL | 3.14t | what happened |
+|---|---|---|---|
+| cpu, 8 crunches | 0.99s | 0.19s | 5.2x, the cores finally count |
+| words, shared corpus | 1.14s | 0.26s | 4.4x, and it overtakes multiprocessing (0.40s) |
+| throughput | 0.07s | 0.10s | coordination cost, not compute; roughly flat |
+| pingpong | 0.18s | 0.18s | flat, wakeups dominate |
+| spawn | 0.025s | 0.025s | flat, pooled either way |
+
+So: on 3.12 and older you adopt pyroutine for the model and the
+coordination wins, and the CPU rows stay multiprocessing territory. On
+3.13t/3.14t the same program also becomes your parallelism story. To get
+a free threaded build: `brew install python-freethreading` on macOS, the
+"free-threaded Python" checkbox in the python.org installer on Windows,
+or `uv python install 3.14t` anywhere. `pyroutine.free_threading()`
+tells you at runtime which world you are in.
 
 ## The full API tour
 
