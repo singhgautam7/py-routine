@@ -18,12 +18,27 @@ from __future__ import annotations
 
 import functools
 import itertools
+import sys
 import threading
+import traceback
 from queue import Empty, SimpleQueue
 from typing import Any, Callable, List, Optional, Tuple
 
+from . import _debug
+
 _counter = itertools.count(1)
 _worker_counter = itertools.count(1)
+
+# routines currently executing user code, read by the deadlock detector
+_active = 0
+_active_lock = threading.Lock()
+
+
+def active_routines() -> int:
+    """How many routines are currently executing (including ones blocked
+    inside a channel op). Used by the deadlock detector."""
+    with _active_lock:
+        return _active
 
 # how long an idle worker waits for new work before its thread exits
 _IDLE_TIMEOUT = 5.0
@@ -90,22 +105,70 @@ def _worker_loop(worker: _Worker) -> None:
             task = worker.mailbox.get()
         handle, fn, args, kwargs, name = task
         worker.thread.name = name
+        global _active
+        with _active_lock:
+            _active += 1
         try:
             handle._run(fn, args, kwargs)
         finally:
+            with _active_lock:
+                _active -= 1
             worker.thread.name = worker.idle_name
             _scheduler._park(worker)
+        # drop the task references BEFORE parking in get(): a worker
+        # sitting idle must not keep the finished routine's Handle (and
+        # its arguments) alive, that would delay garbage collection and
+        # the unretrieved exception report
+        del task, handle, fn, args, kwargs
+
+
+# called when a Handle holding a never retrieved exception is garbage
+# collected; replace with set_excepthook()
+_excepthook: Optional[Callable[["Handle", BaseException], None]] = None
+
+
+def _default_excepthook(handle: "Handle", exc: BaseException) -> None:
+    stream = getattr(sys, "stderr", None)
+    if stream is None:  # interpreter teardown
+        return
+    print(
+        f"pyroutine: exception in routine {handle._name!r} was never retrieved",
+        file=stream,
+    )
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=stream)
+
+
+def set_excepthook(
+    hook: Optional[Callable[["Handle", BaseException], None]],
+) -> None:
+    """Install a hook called as hook(handle, exc) when a routine died
+    with an exception nobody ever collected via result(). Mirrors
+    threading.excepthook in spirit: by default such exceptions are
+    printed to stderr when the Handle is garbage collected, because a
+    silently vanishing failure is the one thing Go would never allow
+    (it crashes the whole program instead). Pass None to restore the
+    default printer."""
+    global _excepthook
+    if hook is not None and not callable(hook):
+        raise TypeError("excepthook must be callable or None")
+    _excepthook = hook
 
 
 class Handle:
-    """A running routine. Like a Future, kept deliberately small."""
+    """A running routine. Like a Future, kept deliberately small.
 
-    __slots__ = ("_result", "_exc", "_done", "_name")
+    If the routine dies with an exception and result() is never called,
+    the exception is reported through the excepthook (stderr by
+    default) when the Handle is garbage collected, so failures cannot
+    vanish silently."""
+
+    __slots__ = ("_result", "_exc", "_done", "_name", "_exc_retrieved")
 
     def __init__(self, fn: Callable, args: tuple, kwargs: dict):
         self._result: Any = None
         self._exc: Optional[BaseException] = None
         self._done = threading.Event()
+        self._exc_retrieved = False
         self._name = f"pyroutine-{next(_counter)}-{getattr(fn, '__name__', 'fn')}"
         _scheduler.submit((self, fn, args, kwargs, self._name))
 
@@ -118,16 +181,27 @@ class Handle:
         finally:
             self._done.set()
 
-    def join(self, timeout: Optional[float] = None) -> bool:
-        """Wait for the routine to finish. True if it did."""
+    def _wait_done(self, timeout: Optional[float]) -> bool:
+        if timeout is None and _debug.enabled:
+            _debug.park_begin("join")
+            try:
+                return self._done.wait()
+            finally:
+                _debug.park_end()
         return self._done.wait(timeout)
+
+    def join(self, timeout: Optional[float] = None) -> bool:
+        """Wait for the routine to finish. True if it did. Does not
+        collect the result or exception, that is result()'s job."""
+        return self._wait_done(timeout)
 
     def result(self, timeout: Optional[float] = None) -> Any:
         """Wait for the routine and return its value. Re-raises whatever
         exception it died with."""
-        if not self._done.wait(timeout):
+        if not self._wait_done(timeout):
             raise TimeoutError("routine is still running")
         if self._exc is not None:
+            self._exc_retrieved = True
             raise self._exc
         return self._result
 
@@ -138,6 +212,15 @@ class Handle:
     def __repr__(self) -> str:
         state = "done" if self.done else "running"
         return f"<Handle {self._name} {state}>"
+
+    def __del__(self) -> None:
+        if self._exc is None or self._exc_retrieved:
+            return
+        try:
+            hook = _excepthook if _excepthook is not None else _default_excepthook
+            hook(self, self._exc)
+        except Exception:
+            pass  # never let a reporting failure escape the collector
 
 
 def go(fn: Callable, *args: Any, **kwargs: Any) -> Handle:

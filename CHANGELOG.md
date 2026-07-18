@@ -44,4 +44,13 @@ First release.
 - select() fast path: a one case select without default now costs the
   same as the bare channel operation
 - mypy in CI, the package type checks clean
+- Unretrieved routine exceptions are reported at garbage collection
+  (stderr by default, set_excepthook to customize), so failures can
+  never vanish silently
+- Opt-in deadlock detection (enable_deadlock_detection) issuing a
+  DeadlockWarning when every running routine is blocked forever in
+  pyroutine primitives with no pending timers, in the spirit of Go's
+  "all goroutines are asleep"
+- Worker threads drop task references while idle, finished Handles are
+  collectable immediately
 - Fully typed, pure Python, zero dependencies

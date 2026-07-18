@@ -22,6 +22,8 @@ import threading
 from collections import deque
 from typing import Any, Deque, Generic, Iterator, Optional, Tuple, TypeVar
 
+from . import _debug
+
 T = TypeVar("T")
 
 # internal markers, never exposed to users
@@ -72,6 +74,14 @@ class _Waiter:
         self._event.set()
 
     def wait(self, timeout: Optional[float] = None) -> bool:
+        if timeout is None and _debug.enabled:
+            # an untimed park is what the deadlock detector cares about,
+            # a timed one wakes itself
+            _debug.park_begin("channel op")
+            try:
+                return self._event.wait()
+            finally:
+                _debug.park_end()
         return self._event.wait(timeout)
 
 

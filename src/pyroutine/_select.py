@@ -22,6 +22,7 @@ import threading
 import time
 from typing import Any, Optional, Tuple, TypeVar, Union
 
+from . import _debug
 from ._chan import _CLOSED, _TIMEOUT_INDEX, Chan, ChanClosed, RecvChan, SendChan, _Waiter
 
 _RECV = "recv"
@@ -171,13 +172,17 @@ class Timer:
         self._fired = False
         self._timer = threading.Timer(seconds, self._fire)
         self._timer.daemon = True
+        _debug.timer_started()
         self._timer.start()
 
     def _fire(self) -> None:
         with self._lock:
+            first = not self._fired
             self._fired = True
+        if not first:
+            return  # stop() got there at the last instant
+        _debug.timer_finished()
         with contextlib.suppress(ChanClosed):
-            # a losing race with stop() means nothing to deliver
             self.chan.try_send(time.monotonic())
         self.chan.close()
 
@@ -190,6 +195,7 @@ class Timer:
             stopped = not self._fired
             self._fired = True
         if stopped:
+            _debug.timer_finished()
             self.chan.close()
         return stopped
 
@@ -228,15 +234,18 @@ def tick(seconds: float) -> Chan:
     ch: Chan = Chan(1)
 
     def fire() -> None:
+        _debug.timer_finished()
         try:
             ch.try_send(time.monotonic())
         except ChanClosed:
             return  # the user closed the channel, stop rescheduling
         t = threading.Timer(seconds, fire)
         t.daemon = True
+        _debug.timer_started()
         t.start()
 
     t = threading.Timer(seconds, fire)
     t.daemon = True
+    _debug.timer_started()
     t.start()
     return ch

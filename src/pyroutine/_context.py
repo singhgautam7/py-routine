@@ -29,6 +29,7 @@ import threading
 import time
 from typing import Callable, List, Optional, Tuple
 
+from . import _debug
 from ._chan import Chan
 
 
@@ -125,6 +126,7 @@ class _CancelContext(Context):
             t = threading.Timer(remaining, self._on_deadline)
             t.daemon = True
             self._timer = t
+            _debug.timer_started()
             t.start()
 
     def done(self) -> Chan:
@@ -149,9 +151,12 @@ class _CancelContext(Context):
             self._children = []
             timer = self._timer
             self._timer = None
-        # everything below runs without holding our lock
+        # everything below runs without holding our lock. Whoever pops
+        # the timer slot (deadline firing or explicit cancel, exactly
+        # one of them gets a non-None timer) balances the pending count.
         if timer is not None:
             timer.cancel()
+            _debug.timer_finished()
         self._done.close()
         for child in children:
             child._cancel(exc)

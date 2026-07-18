@@ -143,6 +143,8 @@ Everything the package exports, with examples:
 - Decorators: `@routine`, `@once`, `@synchronized`
 - Asyncio bridge: `pyroutine.aio` with awaitable `recv`, `send`,
   `select`, `iterate`
+- Failure visibility: `set_excepthook`, `enable_deadlock_detection`,
+  `DeadlockWarning`
 - Interpreter introspection: `free_threading`, `GILEnabledWarning`
 
 ### Spawning routines: `go()`
@@ -662,6 +664,57 @@ def deposit(x): ...
 @synchronized(m)
 def withdraw(x): ...
 ```
+
+### Failure visibility: lost exceptions and deadlocks
+
+Go refuses to let concurrency failures vanish: an unrecovered panic
+crashes the program, and a fully blocked program dies with "all
+goroutines are asleep - deadlock!". pyroutine mirrors both, the
+Python way.
+
+**Exceptions can never disappear silently.** A routine's exception is
+re-raised from `result()`. If nobody ever calls `result()`, the
+exception is reported to stderr when the `Handle` is garbage
+collected, the same protection asyncio gives Tasks:
+
+```
+pyroutine: exception in routine 'pyroutine-7-fetch' was never retrieved
+Traceback (most recent call last):
+  ...
+ValueError: bad response
+```
+
+Route it somewhere else (your logger, your crash reporter, or re-raise
+to crash hard like Go) with a hook:
+
+```python
+from pyroutine import set_excepthook
+
+set_excepthook(lambda handle, exc: log.error("routine died", exc_info=exc))
+set_excepthook(None)     # back to the stderr default
+```
+
+`ErrGroup` handles are exempt: the group already delivers the first
+error from `wait()`.
+
+**Deadlock detection** is opt-in, made for tests and development:
+
+```python
+from pyroutine import enable_deadlock_detection
+
+enable_deadlock_detection(interval=0.5)
+```
+
+A background watcher checks whether every running routine is blocked
+forever inside a pyroutine primitive (channel op, `select`, `join`,
+`WaitGroup.wait`, all without timeouts) with no pyroutine timer
+pending that could wake anything. Seeing the same stuck picture twice
+in a row, it issues a `DeadlockWarning` naming the blocked routines
+and stating whether the main thread is stuck too. Unlike Go's runtime
+we do not own every thread in the process, so this warns instead of
+crashing: an outside thread or an asyncio task could still legally
+complete a channel operation the watcher cannot see. Waits with a
+timeout are never reported, they wake themselves.
 
 ### Typed channels: `Chan[int]`
 

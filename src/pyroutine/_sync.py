@@ -7,6 +7,7 @@ import threading
 from contextlib import contextmanager
 from typing import Any, Callable, Optional, Union
 
+from . import _debug
 from ._context import Context, with_cancel
 from ._routines import Handle
 
@@ -38,6 +39,13 @@ class WaitGroup:
 
     def wait(self, timeout: Optional[float] = None) -> bool:
         """Block until the counter hits zero. True if it did."""
+        if timeout is None and _debug.enabled:
+            _debug.park_begin("WaitGroup.wait")
+            try:
+                with self._cond:
+                    return self._cond.wait_for(lambda: self._count == 0)
+            finally:
+                _debug.park_end()
         with self._cond:
             return self._cond.wait_for(lambda: self._count == 0, timeout)
 
@@ -237,7 +245,12 @@ class ErrGroup:
                     sem.release()
 
         wrapped.__name__ = getattr(fn, "__name__", "wrapped")
-        return Handle(wrapped, (), {})
+        handle = Handle(wrapped, (), {})
+        # the group re-raises the first error from wait(), so a group
+        # handle's exception is never "lost" and must not be reported
+        # by the unretrieved-exception hook
+        handle._exc_retrieved = True
+        return handle
 
     def wait(self, timeout: Optional[float] = None) -> None:
         """Block until every routine has finished, then re-raise the

@@ -23,8 +23,13 @@ from ._context import (
     with_deadline,
     with_timeout,
 )
+from ._debug import (
+    DeadlockWarning,
+    disable_deadlock_detection,
+    enable_deadlock_detection,
+)
 from ._helpers import merge
-from ._routines import Handle, go, routine
+from ._routines import Handle, go, routine, set_excepthook
 from ._select import Timer, after, recv_case, select, send_case, tick
 from ._sync import ErrGroup, Mutex, Once, RWMutex, WaitGroup, once, synchronized
 
@@ -70,6 +75,7 @@ __all__ = [
     "ChanClosed",
     "Context",
     "DeadlineExceeded",
+    "DeadlockWarning",
     "ErrGroup",
     "GILEnabledWarning",
     "Handle",
@@ -82,6 +88,8 @@ __all__ = [
     "WaitGroup",
     "after",
     "background",
+    "disable_deadlock_detection",
+    "enable_deadlock_detection",
     "free_threading",
     "go",
     "merge",
@@ -90,6 +98,7 @@ __all__ = [
     "routine",
     "select",
     "send_case",
+    "set_excepthook",
     "synchronized",
     "tick",
     "with_cancel",
