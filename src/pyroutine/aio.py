@@ -29,7 +29,8 @@ draining with iterate() and closing the channel to shut down.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, AsyncIterator, Optional, TypeVar, Union
+import random
+from typing import Any, AsyncIterator, Optional, Tuple, TypeVar, Union
 
 from ._chan import (
     _CLOSED,
@@ -41,6 +42,7 @@ from ._chan import (
     SendChan,
     _Waiter,
 )
+from ._select import _RECV, _SEND
 
 T = TypeVar("T")
 
@@ -150,6 +152,108 @@ async def send(
     if w.value is _CLOSED:
         raise ChanClosed("channel closed while sending")
     assert w.value is _SEND_OK
+
+
+async def select(
+    *cases: tuple,
+    default: bool = False,
+    timeout: Optional[float] = None,
+) -> Tuple[int, Any]:
+    """Awaitable pyroutine.select() over the same recv_case()/send_case()
+    cases the sync API uses, with identical semantics: random fairness,
+    exactly one case fires, (index, value) back, ChanClosed with .index
+    on a closed winning case, (-1, None) with default=True, TimeoutError
+    on deadline. The awaiting task parks with no polling.
+
+        idx, val = await aio.select(recv_case(events), recv_case(ctl))
+    """
+    if not cases:
+        raise ValueError("select() needs at least one case")
+    for c in cases:
+        if not (isinstance(c, tuple) and len(c) == 3 and c[0] in (_RECV, _SEND)):
+            raise TypeError("cases must be built with recv_case() or send_case()")
+
+    if len(cases) == 1 and not default:
+        kind, ch, val = cases[0]
+        try:
+            if kind == _RECV:
+                return 0, await recv(ch, timeout)
+            await send(ch, val, timeout)
+            return 0, None
+        except ChanClosed as e:
+            e.index = 0
+            raise
+
+    loop = asyncio.get_running_loop()
+    order = list(range(len(cases)))
+    random.shuffle(order)
+
+    chan_by_id = {id(c[1]): c[1] for c in cases}
+    ordered_chans = [chan_by_id[k] for k in sorted(chan_by_id)]
+
+    waiter: Optional[_AsyncWaiter] = None
+    for ch in ordered_chans:
+        ch._lock.acquire()
+    try:
+        for i in order:
+            kind, ch, val = cases[i]
+            try:
+                if kind == _RECV:
+                    value, ok = ch._poll_recv_locked()
+                    if ok:
+                        return i, value
+                else:
+                    if ch._poll_send_locked(val):
+                        return i, None
+            except ChanClosed as e:
+                e.index = i
+                raise
+        if default:
+            return -1, None
+        waiter = _AsyncWaiter(loop)
+        for i in range(len(cases)):
+            kind, ch, val = cases[i]
+            if kind == _RECV:
+                ch._recv_waiters.append((waiter, i))
+            else:
+                ch._send_waiters.append((waiter, i, val))
+    finally:
+        for ch in reversed(ordered_chans):
+            ch._lock.release()
+
+    timer = None
+    if timeout is not None:
+
+        def on_timeout() -> None:
+            if waiter.commit(_TIMEOUT_INDEX):
+                for c in ordered_chans:
+                    c._unregister(waiter)
+            waiter._resolve()
+
+        timer = loop.call_later(timeout, on_timeout)
+    try:
+        await waiter._future
+    except asyncio.CancelledError:
+        if waiter.commit(_TIMEOUT_INDEX):
+            for c in ordered_chans:
+                c._unregister(waiter)
+        raise
+    finally:
+        if timer is not None:
+            timer.cancel()
+
+    for ch in ordered_chans:
+        ch._unregister(waiter)
+
+    idx = waiter.index
+    assert idx is not None
+    if idx == _TIMEOUT_INDEX:
+        raise TimeoutError("select timed out")
+    if waiter.value is _CLOSED:
+        raise ChanClosed("select hit a closed channel", index=idx)
+    if cases[idx][0] == _RECV:
+        return idx, waiter.value
+    return idx, None
 
 
 async def iterate(ch: "Union[Chan[T], RecvChan[T]]") -> "AsyncIterator[T]":

@@ -49,7 +49,7 @@ class Context:
     __slots__ = ("_done",)
 
     def __init__(self) -> None:
-        self._done = Chan()
+        self._done: Chan = Chan()
 
     def done(self) -> Chan:
         """A channel that closes when the context is cancelled. Park on
@@ -94,12 +94,14 @@ class _CancelContext(Context):
         self._timer: Optional[threading.Timer] = None
         # a child never outlives its parent's deadline
         parent_deadline = parent.deadline()
+        effective: Optional[float]
         if deadline is not None and parent_deadline is not None:
-            self._deadline = min(deadline, parent_deadline)
+            effective = min(deadline, parent_deadline)
         elif deadline is not None:
-            self._deadline = deadline
+            effective = deadline
         else:
-            self._deadline = parent_deadline
+            effective = parent_deadline
+        self._deadline = effective
 
         inherited: Optional[BaseException] = None
         if isinstance(parent, _CancelContext):
@@ -114,7 +116,8 @@ class _CancelContext(Context):
 
         # only own a timer if this context introduced a deadline itself
         if deadline is not None:
-            remaining = self._deadline - time.monotonic()
+            assert effective is not None  # deadline was given, so min() kept a float
+            remaining = effective - time.monotonic()
             if remaining <= 0:
                 self._cancel(DeadlineExceeded("context deadline exceeded"))
                 return

@@ -69,6 +69,19 @@ def select(
         if not (isinstance(c, tuple) and len(c) == 3 and c[0] in (_RECV, _SEND)):
             raise TypeError("cases must be built with recv_case() or send_case()")
 
+    if len(cases) == 1 and not default:
+        # fast path: a one case select without default is exactly the
+        # plain channel operation, minus the multi channel machinery
+        kind, ch, val = cases[0]
+        try:
+            if kind == _RECV:
+                return 0, ch.recv(timeout)
+            ch.send(val, timeout)
+            return 0, None
+        except ChanClosed as e:
+            e.index = 0
+            raise
+
     order = list(range(len(cases)))
     random.shuffle(order)  # same pseudo random fairness Go gives you
 
@@ -122,6 +135,7 @@ def select(
         ch._unregister(waiter)
 
     idx = waiter.index
+    assert idx is not None  # finish() only runs after a commit set it
     if waiter.value is _CLOSED:
         raise ChanClosed("select hit a closed channel", index=idx)
     if cases[idx][0] == _RECV:
@@ -129,25 +143,70 @@ def select(
     return idx, None
 
 
+class Timer:
+    """A stoppable one shot timer, like Go's time.Timer.
+
+    `Timer(seconds).chan` receives the current monotonic time once when
+    the timer fires, then closes. stop() cancels a timer that has not
+    fired and closes the channel, so anything parked on it wakes up
+    with ChanClosed instead of waiting out a deadline nobody needs
+    anymore. after(s) is shorthand for Timer(s).chan for the cases
+    where you never stop it.
+
+        t = Timer(5.0)
+        try:
+            idx, val = select(recv_case(work), recv_case(t.chan))
+        finally:
+            t.stop()
+    """
+
+    __slots__ = ("chan", "_timer", "_lock", "_fired")
+
+    def __init__(self, seconds: float):
+        if seconds < 0:
+            raise ValueError("Timer needs a non negative delay")
+        self.chan: Chan = Chan(1)
+        self._lock = threading.Lock()
+        self._fired = False
+        self._timer = threading.Timer(seconds, self._fire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _fire(self) -> None:
+        with self._lock:
+            self._fired = True
+        try:
+            self.chan.try_send(time.monotonic())
+        except ChanClosed:
+            pass  # stopped at the last instant, nothing to deliver
+        self.chan.close()
+
+    def stop(self) -> bool:
+        """Cancel the timer. True if it was stopped before firing, in
+        which case the channel closes without ever carrying a value.
+        Safe to call more than once, and after the timer fired."""
+        self._timer.cancel()
+        with self._lock:
+            stopped = not self._fired
+            self._fired = True
+        if stopped:
+            self.chan.close()
+        return stopped
+
+    def __repr__(self) -> str:
+        state = "fired-or-stopped" if self._fired else "pending"
+        return f"<Timer {state}>"
+
+
 def after(seconds: float) -> Chan:
     """Returns a channel that receives the current monotonic time once,
     after the given delay, then closes. Handy as a select case:
 
         idx, _ = select(recv_case(work), recv_case(after(1.0)))
+
+    Use Timer if you might need to cancel it before it fires.
     """
-    ch = Chan(1)
-
-    def fire() -> None:
-        try:
-            ch.send(time.monotonic())
-        except ChanClosed:
-            pass
-        ch.close()
-
-    t = threading.Timer(seconds, fire)
-    t.daemon = True
-    t.start()
-    return ch
+    return Timer(seconds).chan
 
 
 def tick(seconds: float) -> Chan:
@@ -166,7 +225,7 @@ def tick(seconds: float) -> Chan:
     """
     if seconds <= 0:
         raise ValueError("tick() needs a positive interval")
-    ch = Chan(1)
+    ch: Chan = Chan(1)
 
     def fire() -> None:
         try:

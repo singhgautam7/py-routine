@@ -30,7 +30,7 @@ def merge(*chans: "Union[Chan[T], RecvChan[T]]", maxsize: int = 0) -> "Chan[T]":
     """
     if not chans:
         raise ValueError("merge() needs at least one channel")
-    out = Chan(maxsize)
+    out: "Chan[T]" = Chan(maxsize)
 
     def pump() -> None:
         remaining = list(chans)
@@ -38,6 +38,7 @@ def merge(*chans: "Union[Chan[T], RecvChan[T]]", maxsize: int = 0) -> "Chan[T]":
             try:
                 _, value = select(*[recv_case(c) for c in remaining])
             except ChanClosed as e:
+                assert e.index is not None  # select always sets it
                 del remaining[e.index]
                 continue
             try:

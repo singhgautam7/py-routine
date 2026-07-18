@@ -25,8 +25,8 @@ from ._context import (
 )
 from ._helpers import merge
 from ._routines import Handle, go, routine
-from ._select import after, recv_case, select, send_case, tick
-from ._sync import ErrGroup, Mutex, Once, RWMutex, WaitGroup
+from ._select import Timer, after, recv_case, select, send_case, tick
+from ._sync import ErrGroup, Mutex, Once, RWMutex, WaitGroup, once, synchronized
 
 __version__ = "0.1.0"
 
@@ -43,7 +43,7 @@ def free_threading() -> bool:
     the GIL not re-enabled at runtime). Only then do routines run
     Python code in parallel across cores."""
     try:
-        return not _sys._is_gil_enabled()
+        return not _sys._is_gil_enabled()  # type: ignore[attr-defined]
     except AttributeError:
         # older interpreters have no free threading at all
         return False
@@ -78,16 +78,19 @@ __all__ = [
     "RWMutex",
     "RecvChan",
     "SendChan",
+    "Timer",
     "WaitGroup",
     "after",
     "background",
     "free_threading",
     "go",
     "merge",
+    "once",
     "recv_case",
     "routine",
     "select",
     "send_case",
+    "synchronized",
     "tick",
     "with_cancel",
     "with_deadline",

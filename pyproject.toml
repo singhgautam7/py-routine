@@ -49,7 +49,16 @@ Changelog = "https://github.com/singhgautam7/py-routine/blob/main/CHANGELOG.md"
 dev = [
     "pytest>=8.0",
     "pytest-timeout>=2.3",
+    "mypy>=1.10",
 ]
+
+[tool.mypy]
+# mypy no longer accepts 3.9 as a target; the source stays 3.9
+# compatible and CI runs the test suite on 3.9 to prove it
+python_version = "3.10"
+files = ["src/pyroutine"]
+warn_unused_ignores = true
+no_implicit_optional = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pyroutine"]

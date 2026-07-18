@@ -32,7 +32,16 @@ First release.
   growth (a burst of blocked routines can never starve a runnable one)
 - Generic typing: Chan[int], RecvChan[T], SendChan[T], typed merge and
   select case builders, purely static
-- pyroutine.aio asyncio bridge: awaitable recv/send and async iteration
-  over channels via the same waiter registration, no polling, no
-  executor threads
+- pyroutine.aio asyncio bridge: awaitable recv/send/select and async
+  iteration over channels via the same waiter registration, no polling,
+  no executor threads
+- Timer: a stoppable after(), stop() closes the channel and wakes
+  anything parked on it
+- ErrGroup.set_limit(n) to bound in flight routines, like errgroup's
+  SetLimit
+- once and synchronized decorators (sync.OnceValues and a Mutex guarded
+  function, respectively)
+- select() fast path: a one case select without default now costs the
+  same as the bare channel operation
+- mypy in CI, the package type checks clean
 - Fully typed, pure Python, zero dependencies

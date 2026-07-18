@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 import threading
 from contextlib import contextmanager
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 from ._context import Context, with_cancel
 from ._routines import Handle
@@ -190,6 +191,8 @@ class ErrGroup:
         self._wg = WaitGroup()
         self._lock = threading.Lock()
         self._exc: Optional[BaseException] = None
+        self._sem: Optional[threading.BoundedSemaphore] = None
+        self._spawned = False
 
     @property
     def ctx(self) -> Context:
@@ -197,9 +200,26 @@ class ErrGroup:
         wait() returns, exactly like Go's errgroup.WithContext."""
         return self._ctx
 
+    def set_limit(self, n: Optional[int]) -> None:
+        """Cap the number of concurrently running routines, like Go's
+        errgroup.SetLimit. While n routines are active, go() blocks the
+        caller until one finishes. None removes the cap. Must be called
+        before the first go()."""
+        if self._spawned:
+            raise RuntimeError("set_limit() must be called before go()")
+        if n is not None and n < 1:
+            raise ValueError("limit must be a positive integer or None")
+        self._sem = threading.BoundedSemaphore(n) if n is not None else None
+
     def go(self, fn: Callable, *args: Any, **kwargs: Any) -> Handle:
         """Spawn fn as a routine in the group. The Handle still works
-        normally if you want this routine's own result or exception."""
+        normally if you want this routine's own result or exception.
+        With set_limit() in effect this blocks while the group is at
+        its concurrency cap."""
+        self._spawned = True
+        sem = self._sem
+        if sem is not None:
+            sem.acquire()
         self._wg.add(1)
 
         def wrapped() -> Any:
@@ -213,6 +233,8 @@ class ErrGroup:
                 raise
             finally:
                 self._wg.done()
+                if sem is not None:
+                    sem.release()
 
         wrapped.__name__ = getattr(fn, "__name__", "wrapped")
         return Handle(wrapped, (), {})
@@ -227,3 +249,78 @@ class ErrGroup:
         with self._lock:
             if self._exc is not None:
                 raise self._exc
+
+
+def once(fn: Callable) -> Callable:
+    """Decorator: fn runs at most once, no matter how many routines
+    call it or with what arguments. Every call returns the first call's
+    result; if the first call raised, every call re-raises that same
+    exception. Like Go's sync.OnceValues:
+
+        @once
+        def config():
+            return expensive_load()
+
+        config()   # loads
+        config()   # cached, same object back
+    """
+    lock = threading.Lock()
+    done = False
+    value: Any = None
+    exc: Optional[BaseException] = None
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        nonlocal done, value, exc
+        if not done:
+            with lock:
+                if not done:
+                    try:
+                        value = fn(*args, **kwargs)
+                    except BaseException as e:
+                        exc = e
+                    finally:
+                        done = True
+        if exc is not None:
+            raise exc
+        return value
+
+    return wrapper
+
+
+def _synchronized_wrapper(fn: Callable, mutex: Mutex) -> Callable:
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with mutex:
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def synchronized(fn_or_mutex: Union[Callable, Mutex]) -> Callable:
+    """Decorator: the function body runs under a Mutex, so at most one
+    routine is ever inside it. Bare form gives the function a private
+    lock; pass a Mutex to share one lock across several functions:
+
+        @synchronized
+        def bump():             # private lock
+            counter[0] += 1
+
+        m = Mutex()
+
+        @synchronized(m)        # deposit and withdraw exclude each other
+        def deposit(x): ...
+
+        @synchronized(m)
+        def withdraw(x): ...
+    """
+    if isinstance(fn_or_mutex, Mutex):
+        mutex = fn_or_mutex
+
+        def decorator(fn: Callable) -> Callable:
+            return _synchronized_wrapper(fn, mutex)
+
+        return decorator
+    if not callable(fn_or_mutex):
+        raise TypeError("synchronized expects a function or a Mutex")
+    return _synchronized_wrapper(fn_or_mutex, Mutex())

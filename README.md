@@ -135,11 +135,14 @@ Everything the package exports, with examples:
 
 - Routines: `go`, `routine`, `Handle`
 - Channels: `Chan`, `ChanClosed`, `RecvChan`, `SendChan`, `merge`
-- Multiplexing and timers: `select`, `recv_case`, `send_case`, `after`, `tick`
+- Multiplexing and timers: `select`, `recv_case`, `send_case`, `after`,
+  `Timer`, `tick`
 - Cancellation: `Context`, `background`, `with_cancel`, `with_timeout`,
   `with_deadline`, `Canceled`, `DeadlineExceeded`
 - Sync: `WaitGroup`, `ErrGroup`, `Once`, `Mutex`, `RWMutex`
-- Asyncio bridge: `pyroutine.aio` with awaitable `recv`, `send`, `iterate`
+- Decorators: `@routine`, `@once`, `@synchronized`
+- Asyncio bridge: `pyroutine.aio` with awaitable `recv`, `send`,
+  `select`, `iterate`
 - Interpreter introspection: `free_threading`, `GILEnabledWarning`
 
 ### Spawning routines: `go()`
@@ -354,7 +357,7 @@ except ChanClosed as e:
     print(f"case {e.index} is closed")
 ```
 
-### `after()`: timer channels
+### `after()` and `Timer`: timer channels
 
 `after(seconds)` returns a channel that receives one value (the current
 `time.monotonic()`) after the delay, then closes. It is Go's
@@ -366,6 +369,21 @@ from pyroutine import after, recv_case, select
 idx, val = select(recv_case(work), recv_case(after(0.5)))
 if idx == 1:
     print("no work for 500ms")
+```
+
+When the timeout might become irrelevant before it fires, use `Timer`,
+which is `after()` plus a `stop()`. Stopping closes the timer's channel,
+so anything parked on it wakes with `ChanClosed` instead of holding a
+registration for a deadline nobody wants anymore:
+
+```python
+from pyroutine import Timer
+
+t = Timer(5.0)
+try:
+    idx, val = select(recv_case(replies), recv_case(t.chan))
+finally:
+    t.stop()      # True if it had not fired yet
 ```
 
 ### `WaitGroup`
@@ -517,6 +535,16 @@ has failed. `eg.go()` still returns the routine's `Handle` when you
 want individual results, and `wait()` cancels the group context on the
 way out even on success, exactly like Go.
 
+Bound the fan out with `set_limit`, like Go's `errgroup.SetLimit`:
+
+```python
+eg = ErrGroup()
+eg.set_limit(8)              # at most 8 routines in flight
+for url in thousands_of_urls:
+    eg.go(fetch, url)        # blocks here while 8 are already running
+eg.wait()
+```
+
 ### Directional channels: `RecvChan` and `SendChan`
 
 Go APIs say `chan<- T` (send only) or `<-chan T` (receive only) to make
@@ -595,6 +623,46 @@ Method forms `rlock()/runlock()/lock()/unlock()` exist for when a
 in one routine, a waiting writer between the two acquisitions
 deadlocks you.
 
+### Decorators: `@once` and `@synchronized`
+
+(`@routine`, the "spawn on call" decorator, is covered under Routines.)
+
+`@once` makes a function run at most once, no matter how many routines
+race to call it. Everyone gets the first call's return value back, and
+if the first call raised, everyone gets that same exception. It is
+Go's `sync.OnceValues` as a decorator, ideal for lazy singletons:
+
+```python
+from pyroutine import once
+
+@once
+def db_pool():
+    return create_expensive_pool()
+
+db_pool()    # creates the pool
+db_pool()    # same pool object, instantly, from any routine
+```
+
+`@synchronized` runs the function body under a `Mutex`. The bare form
+gives the function its own private lock; passing a `Mutex` shares one
+lock across several functions:
+
+```python
+from pyroutine import Mutex, synchronized
+
+@synchronized                # private lock, calls serialize
+def bump_counter():
+    state["n"] += 1
+
+m = Mutex()
+
+@synchronized(m)             # deposit and withdraw exclude each other
+def deposit(x): ...
+
+@synchronized(m)
+def withdraw(x): ...
+```
+
 ### Typed channels: `Chan[int]`
 
 Channels are generic. Annotate them and type checkers follow values
@@ -630,6 +698,12 @@ async def handler():
 
 value = await aio.recv(ch, timeout=1.0)   # awaitable recv, TimeoutError on deadline
 await aio.send(ch, value)                 # awaitable send, ChanClosed semantics match
+
+idx, val = await aio.select(              # awaitable select, same cases,
+    recv_case(events),                    # same fairness and exactly once
+    recv_case(control),                   # guarantees as the sync one
+    timeout=1.0,
+)
 ```
 
 The bridge registers the same waiters blocking threads use and resolves
