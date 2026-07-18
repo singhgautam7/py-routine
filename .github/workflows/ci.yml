@@ -11,9 +11,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.13t is the free threaded build, the one this library
-        # is really aimed at
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.13t"]
+        # the t suffixed entries are free threaded builds, the ones
+        # this library is really aimed at
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

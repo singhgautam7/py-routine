@@ -464,21 +464,83 @@ def main():
         f" {os.cpu_count()} cpus{RESET}"
     )
     only = set(sys.argv[1:])
+    all_results = []  # (key, desc, [(approach, seconds), ...])
     for key, desc, impls in SCENARIOS:
         if only and key not in only:
             continue
-        print(f"\n{BOLD}{CYAN}{key}{RESET}  {DIM}{desc}{RESET}")
+        print(f"\n{BOLD}{CYAN}▶ {key}{RESET}  {DIM}{desc}{RESET}")
         results = []
         for name, fn in impls:
+            if sys.stdout.isatty():
+                print(f"    {DIM}running {name}...{RESET}", end="\r", flush=True)
             elapsed = timed(fn)
             results.append((name, elapsed))
-            print(f"  {name:<16} {BOLD}{elapsed:7.3f}s{RESET}", flush=True)
+            print(f"    {name:<16} {BOLD}{elapsed:7.3f}s{RESET}          ")
+        all_results.append((key, desc, results))
+
+    # ----------------------------------------------------------------- #
+    # results table
+    # ----------------------------------------------------------------- #
+    print(f"\n{BOLD}{MAGENTA}Results{RESET}  {DIM}(python {sys.version.split()[0]}, {build}){RESET}")
+    print(f"{DIM}┌────────────┬──────────────────┬─────────┬─────────────┐{RESET}")
+    print(
+        f"{DIM}│{RESET} {BOLD}scenario   {RESET}{DIM}│{RESET} {BOLD}approach         {RESET}{DIM}│{RESET}"
+        f" {BOLD}   time {RESET}{DIM}│{RESET} {BOLD}vs fastest  {RESET}{DIM}│{RESET}"
+    )
+    for key, _, results in all_results:
+        print(f"{DIM}├────────────┼──────────────────┼─────────┼─────────────┤{RESET}")
         best = min(t for _, t in results)
-        line = ", ".join(
-            f"{GREEN if t == best else YELLOW}{n} {'fastest' if t == best else f'{t / best:.1f}x'}{RESET}"
-            for n, t in results
+        shown_key = key
+        for name, t in results:
+            if t == best:
+                verdict = f"{GREEN}{'fastest':<12}{RESET}"
+                star = f"{GREEN}★{RESET}"
+            else:
+                verdict = f"{YELLOW}{f'{t / best:.1f}x slower':<12}{RESET}"
+                star = " "
+            color = CYAN if name == "pyroutine" else ""
+            print(
+                f"{DIM}│{RESET} {shown_key:<11}{DIM}│{RESET}{star}{color}{name:<17}{RESET}{DIM}│{RESET}"
+                f" {BOLD}{t:6.3f}s{RESET} {DIM}│{RESET} {verdict}{DIM}│{RESET}"
+            )
+            shown_key = ""
+    print(f"{DIM}└────────────┴──────────────────┴─────────┴─────────────┘{RESET}")
+
+    # ----------------------------------------------------------------- #
+    # summary: where pyroutine stands, generated from the numbers
+    # ----------------------------------------------------------------- #
+    print(f"\n{BOLD}{MAGENTA}Summary{RESET}")
+    for key, _, results in all_results:
+        times = dict(results)
+        if "pyroutine" not in times:
+            continue
+        pr = times["pyroutine"]
+        best_name, best_t = min(results, key=lambda r: r[1])
+        if best_name == "pyroutine":
+            others = [(n, t) for n, t in results if n != "pyroutine"]
+            runner_name, runner_t = min(others, key=lambda r: r[1])
+            print(
+                f"  {GREEN}✓ {key:<11}{RESET} pyroutine fastest,"
+                f" {runner_t / pr:.1f}x ahead of {runner_name}"
+            )
+        elif pr <= best_t * 1.15:
+            print(
+                f"  {YELLOW}~ {key:<11}{RESET} pyroutine on par with"
+                f" {best_name} ({pr / best_t:.2f}x)"
+            )
+        else:
+            print(
+                f"  {YELLOW}✗ {key:<11}{RESET} {best_name} fastest,"
+                f" pyroutine {pr / best_t:.1f}x behind"
+            )
+    if ft:
+        print(f"\n  {GREEN}Free threaded build: thread based approaches used all cores.{RESET}")
+    else:
+        print(
+            f"\n  {YELLOW}GIL build: CPU scenarios cannot parallelize with threads here."
+            f" Re-run on a{RESET}\n  {YELLOW}free threaded build (python3.14t) to see"
+            f" the cpu and words rows change.{RESET}"
         )
-        print(f"  {DIM}->{RESET} {line}")
     print()
 
 

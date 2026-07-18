@@ -10,3 +10,5 @@ venv/
 .coverage
 .idea/
 .vscode/
+CLAUDE.md
+.venv-ft/

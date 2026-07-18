@@ -139,6 +139,7 @@ Everything the package exports, with examples:
 - Cancellation: `Context`, `background`, `with_cancel`, `with_timeout`,
   `with_deadline`, `Canceled`, `DeadlineExceeded`
 - Sync: `WaitGroup`, `ErrGroup`, `Once`, `Mutex`, `RWMutex`
+- Asyncio bridge: `pyroutine.aio` with awaitable `recv`, `send`, `iterate`
 - Interpreter introspection: `free_threading`, `GILEnabledWarning`
 
 ### Spawning routines: `go()`
@@ -594,6 +595,51 @@ Method forms `rlock()/runlock()/lock()/unlock()` exist for when a
 in one routine, a waiting writer between the two acquisitions
 deadlocks you.
 
+### Typed channels: `Chan[int]`
+
+Channels are generic. Annotate them and type checkers follow values
+through `send`, `recv`, iteration and the directional views. The type
+parameter is purely static, runtime behavior is identical:
+
+```python
+ch: Chan[int] = Chan(8)
+ch.send(3)            # ok
+ch.send("three")      # flagged by mypy/pyright, runs like before
+
+def consume(inp: RecvChan[int]) -> int:
+    return sum(inp)   # values are known to be ints
+```
+
+### The asyncio bridge: `pyroutine.aio`
+
+The core library is synchronous on purpose, but async code can talk to
+the same channels through `pyroutine.aio`. That lets a threaded
+pipeline and an asyncio front end (a web handler, a websocket) meet in
+the middle without rewriting either side:
+
+```python
+from pyroutine import Chan, go
+from pyroutine import aio
+
+ch = Chan(64)
+go(blocking_producer, ch)          # routines fill the channel...
+
+async def handler():
+    async for item in aio.iterate(ch):    # ...async code drains it
+        await push_to_client(item)
+
+value = await aio.recv(ch, timeout=1.0)   # awaitable recv, TimeoutError on deadline
+await aio.send(ch, value)                 # awaitable send, ChanClosed semantics match
+```
+
+The bridge registers the same waiters blocking threads use and resolves
+an asyncio future via `call_soon_threadsafe` when the operation
+completes, so there is no polling and no hidden executor thread. An
+idle bridge costs nothing. One caveat: a task cancelled at the exact
+moment a thread completes its operation cannot undo that operation
+(for a cancelled `aio.recv` the delivered value is dropped), so prefer
+`iterate()` plus `close()` for shutdown.
+
 ## How it compares
 
 Against the tools Python already gives you:
@@ -626,9 +672,10 @@ Where it is faster than the usual tool:
 
 | workload | usual tool | measured edge | why |
 |---|---|---|---|
+| spawning many short lived units | `threading.Thread` | 4 to 11x | routines run on pooled, reused worker threads, so a spawn is a queue handoff, not a thread creation |
 | streaming pipelines (producer to consumer) | `queue.Queue` | about 2x | `Chan`'s waiter handoff wakes exactly one parked thread, `queue.Queue` takes more lock traffic per item |
 | parallel CPU over shared data, free threaded build | `multiprocessing` | 1.5 to 1.7x | routines read the data where it lives, `multiprocessing` pickles input to children and results back |
-| parallel CPU, free threaded build | asyncio | about 4.5x | an event loop runs on one core no matter how many you have |
+| parallel CPU, free threaded build | asyncio | about 4x | an event loop runs on one core no matter how many you have |
 | two way coordination (request/response) | asyncio | about 3x | a rendezvous handoff is cheaper than two trips through an event loop |
 
 Where it is the same as threading, on purpose:
@@ -636,9 +683,9 @@ Where it is the same as threading, on purpose:
 | workload | outcome | evidence |
 |---|---|---|
 | I/O bound fan out (network calls, sleeps) | identical, the wait is the workload | `examples/benchmark_comparison.py`, all frameworks within 3% |
-| CPU bound on a GIL build | identical, both are stuck behind the GIL, use `multiprocessing` there | `cpu` scenario: threading 1.00s, pyroutine 0.99s, multiprocessing 0.29s |
-| CPU bound on a free threaded build | identical, both use all cores | `cpu` scenario: threading 0.17s, pyroutine 0.19s |
-| spawning cost | a routine is a thread, so spawning is thread creation either way. asyncio tasks are far cheaper to start, which is what the planned M:N scheduler addresses | `spawn` scenario |
+| CPU bound on a GIL build | identical, both are stuck behind the GIL, use `multiprocessing` there | `cpu` scenario: threading 1.03s, pyroutine 0.99s, multiprocessing 0.29s |
+| CPU bound on a free threaded build | identical, both use all cores | `cpu` scenario: threading 0.16s, pyroutine 0.21s |
+| a blocked routine still occupies a thread | asyncio tasks stay far cheaper to *start* (about 4x) and to park in huge numbers; full M:N parking is the remaining roadmap item | `spawn` scenario |
 
 And one honest tradeoff: multiplexing N sources through `select()` costs
 about 2x the raw throughput of the threading idiom (a forwarder thread
@@ -680,26 +727,26 @@ free threaded, seconds, lower is better, best per row and build in bold:
 
 | scenario | approach | 3.12 GIL | 3.14 free threaded |
 |---|---|---|---|
-| spawn, 3k units | threading | 0.12 | 0.21 |
+| spawn, 3k units | threading | 0.09 | 0.22 |
 | | asyncio | **0.006** | **0.005** |
-| | pyroutine | 0.09 | 0.51 |
-| throughput, 200k messages | threading | 0.13 | 0.20 |
+| | pyroutine | 0.025 | 0.020 |
+| throughput, 200k messages | threading | 0.14 | 0.20 |
 | | asyncio | 0.09 | 0.10 |
-| | pyroutine | **0.07** | **0.09** |
-| pingpong, 20k round trips | threading | **0.18** | 0.17 |
+| | pyroutine | **0.07** | **0.10** |
+| pingpong, 20k round trips | threading | **0.17** | 0.19 |
 | | asyncio | 0.55 | 0.55 |
-| | pyroutine | 0.19 | **0.17** |
+| | pyroutine | 0.18 | **0.18** |
 | select8, 40k messages | threading | **0.07** | **0.18** |
 | | asyncio | 0.32 | 0.33 |
-| | pyroutine | 0.14 | 0.39 |
-| cpu, 8 x 4M crunch | sequential | 0.98 | 0.86 |
-| | threading | 1.00 | **0.17** |
-| | asyncio | 1.00 | 0.86 |
-| | multiprocessing | **0.29** | 0.28 |
-| | pyroutine | 0.99 | 0.19 |
-| words, 300k documents | sequential | 1.22 | 1.34 |
-| | multiprocessing | **0.37** | 0.45 |
-| | pyroutine | 1.15 | **0.27** |
+| | pyroutine | 0.14 | 0.38 |
+| cpu, 8 x 4M crunch | sequential | 1.03 | 0.87 |
+| | threading | 1.03 | **0.16** |
+| | asyncio | 1.03 | 0.86 |
+| | multiprocessing | **0.29** | 0.31 |
+| | pyroutine | 0.99 | 0.21 |
+| words, 300k documents | sequential | 1.21 | 1.33 |
+| | multiprocessing | **0.38** | 0.44 |
+| | pyroutine | 1.14 | **0.27** |
 
 Reproduce with:
 
@@ -708,12 +755,14 @@ python benchmarks/run.py            # all scenarios
 python benchmarks/run.py cpu words  # a subset
 ```
 
-The headline reads: channels beat `queue.Queue` for streaming on every
-build, rendezvous coordination matches threading and triples asyncio,
-and on free threaded Python the shared memory scenarios flip from
-"multiprocessing or nothing" to pyroutine winning outright. The spawn
-and select8 rows are the price of the current design (one thread per
-routine, all-channel locking in select), both on the roadmap.
+The headline reads: spawning beats raw threads 4 to 11x thanks to the
+worker pool, channels beat `queue.Queue` for streaming on every build,
+rendezvous coordination matches threading and triples asyncio, and on
+free threaded Python the shared memory scenarios flip from
+"multiprocessing or nothing" to pyroutine winning outright. The select8
+row is the remaining price of the current design (select locks every
+involved channel per operation), and asyncio remains the champion of
+starting cheap tasks, both on the roadmap.
 
 There are also two narrative examples: `examples/benchmark_comparison.py`
 (the same I/O + CPU pipeline in three frameworks) and
@@ -722,15 +771,22 @@ in isolation).
 
 ## How it works
 
-One routine is one daemon OS thread, and every blocking operation registers
-a waiter on the channel and sleeps on an event. Completion is a compare and
-set on the waiter, which is what lets one `send` wake exactly one of many
-`select` calls parked on the same channel. `select` freezes all involved
-channels by taking their locks in a canonical order, checks readiness
-atomically, and only then parks. This is the same overall design Go's
-runtime uses, minus the custom scheduler.
+Routines run on a pool of reusable daemon worker threads: spawning hands
+the task to an idle worker through a private mailbox, and only creates a
+new OS thread when every worker is busy. The pool grows without bound
+(so blocked routines can never starve runnable ones, same liveness as
+thread-per-routine) and idle workers retire after a few seconds.
 
-Because there is no busy waiting anywhere, an idle pipeline costs nothing.
+Every blocking channel operation registers a waiter on the channel and
+sleeps on an event. Completion is a compare and set on the waiter, which
+is what lets one `send` wake exactly one of many `select` calls parked
+on the same channel. `select` freezes all involved channels by taking
+their locks in a canonical order, checks readiness atomically, and only
+then parks. This is the same overall design Go's runtime uses, minus
+continuation style parking.
+
+Because there is no busy waiting anywhere, an idle pipeline costs
+nothing.
 
 ## Honest limitations
 
@@ -738,16 +794,20 @@ Because there is no busy waiting anywhere, an idle pipeline costs nothing.
   so this helps I/O bound and coordination heavy code, not raw number
   crunching. On free threaded builds that restriction disappears. You get
   a `GILEnabledWarning` at import so nobody finds out in production.
-- A routine is an OS thread. Hundreds are fine, hundreds of thousands are
-  not. An M:N scheduler is the headline roadmap item.
-- Channels are untyped at runtime. Type hints via generics are planned.
+- A *blocked* routine still occupies an OS thread (running ones do too,
+  of course). Hundreds of concurrently blocked routines are fine,
+  hundreds of thousands are not. Full M:N parking is the headline
+  roadmap item.
+- The generic `Chan[int]` typing is static only, nothing checks types at
+  runtime, exactly like Go's maps and channels before 1.18 generics.
 
 ## Roadmap
 
-- M:N scheduler so routines stop costing a full thread each (also fixes
-  the spawn row in the benchmarks)
-- Generic typing, `Chan[int]`
-- An asyncio bridge so channels can be awaited from async code
+- Full M:N parking: a routine blocked on a channel should release its
+  worker thread back to the pool. Thread reuse already landed (see the
+  spawn benchmark), the parking half needs continuation support.
+- A faster multi channel `select` to close the select8 benchmark gap.
+- Per case value types for `select` (today cases type as `Any`).
 
 ## Development
 

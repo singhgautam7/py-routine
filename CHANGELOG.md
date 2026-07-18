@@ -27,4 +27,12 @@ First release.
   PYROUTINE_NO_GIL_WARNING=1)
 - Benchmark suite (benchmarks/run.py): six scenarios against threading,
   asyncio and multiprocessing, numbers published in the README
+- Worker pool scheduler: routines reuse idle daemon threads, spawning
+  is 4 to 11x faster than threading.Thread while keeping unbounded
+  growth (a burst of blocked routines can never starve a runnable one)
+- Generic typing: Chan[int], RecvChan[T], SendChan[T], typed merge and
+  select case builders, purely static
+- pyroutine.aio asyncio bridge: awaitable recv/send and async iteration
+  over channels via the same waiter registration, no polling, no
+  executor threads
 - Fully typed, pure Python, zero dependencies
