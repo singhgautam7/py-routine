@@ -1,0 +1,143 @@
+"""select() over multiple channel operations, plus the after() timer.
+
+This is the part that makes channels actually pleasant to use. The
+implementation follows Go's runtime rather than polling:
+
+1. Take the locks of every involved channel in a canonical order
+   (sorted by id), which makes multi lock acquisition deadlock free.
+2. With everything frozen, check the cases in random order. If one can
+   proceed, do it right there and return.
+3. Otherwise park ONE shared waiter on every channel, release the
+   locks, and sleep until some other thread completes exactly one case.
+4. On wake, pull our leftover registrations off the other channels.
+
+No busy waiting anywhere.
+"""
+
+from __future__ import annotations
+
+import random
+import threading
+import time
+from typing import Any, Optional, Tuple
+
+from ._chan import _CLOSED, _TIMEOUT_INDEX, Chan, ChanClosed, _Waiter
+
+_RECV = "recv"
+_SEND = "send"
+
+
+def recv_case(ch: Chan) -> tuple:
+    """A select case that receives from ch."""
+    if not isinstance(ch, Chan):
+        raise TypeError("recv_case() expects a Chan")
+    return (_RECV, ch, None)
+
+
+def send_case(ch: Chan, value: Any) -> tuple:
+    """A select case that sends value into ch."""
+    if not isinstance(ch, Chan):
+        raise TypeError("send_case() expects a Chan")
+    return (_SEND, ch, value)
+
+
+def select(
+    *cases: tuple,
+    default: bool = False,
+    timeout: Optional[float] = None,
+) -> Tuple[int, Any]:
+    """Wait until one of the cases can proceed, then perform it.
+
+    Returns (index, value). For recv cases value is the received item,
+    for send cases it is None. With default=True, returns (-1, None)
+    immediately when nothing is ready. With a timeout, raises
+    TimeoutError if nothing fires in time.
+
+    Raises ChanClosed (with .index set) if the winning case hit a
+    closed channel.
+    """
+    if not cases:
+        raise ValueError("select() needs at least one case")
+    for c in cases:
+        if not (isinstance(c, tuple) and len(c) == 3 and c[0] in (_RECV, _SEND)):
+            raise TypeError("cases must be built with recv_case() or send_case()")
+
+    order = list(range(len(cases)))
+    random.shuffle(order)  # same pseudo random fairness Go gives you
+
+    # every channel exactly once, locked in a canonical global order
+    chan_by_id = {id(c[1]): c[1] for c in cases}
+    ordered_chans = [chan_by_id[k] for k in sorted(chan_by_id)]
+
+    waiter: Optional[_Waiter] = None
+    for ch in ordered_chans:
+        ch._lock.acquire()
+    try:
+        # pass 1: is anything ready right now
+        for i in order:
+            kind, ch, val = cases[i]
+            try:
+                if kind == _RECV:
+                    value, ok = ch._poll_recv_locked()
+                    if ok:
+                        return i, value
+                else:
+                    if ch._poll_send_locked(val):
+                        return i, None
+            except ChanClosed as e:
+                e.index = i
+                raise
+        if default:
+            return -1, None
+        # pass 2: nothing ready, park one shared waiter everywhere
+        waiter = _Waiter()
+        for i in range(len(cases)):
+            kind, ch, val = cases[i]
+            if kind == _RECV:
+                ch._recv_waiters.append((waiter, i))
+            else:
+                ch._send_waiters.append((waiter, i, val))
+    finally:
+        for ch in reversed(ordered_chans):
+            ch._lock.release()
+
+    # sleep until someone completes one of our cases
+    if not waiter.wait(timeout):
+        if waiter.commit(_TIMEOUT_INDEX):
+            for ch in ordered_chans:
+                ch._unregister(waiter)
+            raise TimeoutError("select timed out")
+        # lost the race right at the deadline, a result is incoming
+        waiter.wait()
+
+    # clean our leftover registrations off the losing channels
+    for ch in ordered_chans:
+        ch._unregister(waiter)
+
+    idx = waiter.index
+    if waiter.value is _CLOSED:
+        raise ChanClosed("select hit a closed channel", index=idx)
+    if cases[idx][0] == _RECV:
+        return idx, waiter.value
+    return idx, None
+
+
+def after(seconds: float) -> Chan:
+    """Returns a channel that receives the current monotonic time once,
+    after the given delay, then closes. Handy as a select case:
+
+        idx, _ = select(recv_case(work), recv_case(after(1.0)))
+    """
+    ch = Chan(1)
+
+    def fire() -> None:
+        try:
+            ch.send(time.monotonic())
+        except ChanClosed:
+            pass
+        ch.close()
+
+    t = threading.Timer(seconds, fire)
+    t.daemon = True
+    t.start()
+    return ch
