@@ -11,4 +11,6 @@ First release.
   implemented with waiter registration, no polling
 - after() timer channels
 - WaitGroup (with the wg.go shortcut) and Once
+- free_threading() to detect GIL-disabled interpreters, and a one time
+  GILEnabledWarning at import when routines cannot run in parallel
 - Fully typed, pure Python, zero dependencies

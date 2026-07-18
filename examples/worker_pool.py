@@ -3,6 +3,18 @@
 Run with: python examples/worker_pool.py
 """
 
+try:
+    import pyroutine  # noqa: F401
+except ModuleNotFoundError:
+    # running from a source checkout without installing the package,
+    # fall back to the in-repo sources
+    import os
+    import sys
+
+    sys.path.insert(
+        0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
+    )
+
 from pyroutine import Chan, WaitGroup, go, recv_case, select, after
 
 jobs = Chan(4)

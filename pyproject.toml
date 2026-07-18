@@ -11,7 +11,7 @@ requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
-    { name = "Your Name", email = "you@example.com" },
+    { name = "Gautam Singh", email = "gautamsingh1997@gmail.com" },
 ]
 keywords = [
     "concurrency",
@@ -40,10 +40,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourname/py-routine"
-Repository = "https://github.com/yourname/py-routine"
-Issues = "https://github.com/yourname/py-routine/issues"
-Changelog = "https://github.com/yourname/py-routine/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/singhgautam7/py-routine"
+Repository = "https://github.com/singhgautam7/py-routine"
+Issues = "https://github.com/singhgautam7/py-routine/issues"
+Changelog = "https://github.com/singhgautam7/py-routine/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
@@ -66,3 +66,7 @@ include = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 timeout = 60
+filterwarnings = [
+    # the GIL notice is expected on regular builds, keep test output clean
+    "ignore:pyroutine.:RuntimeWarning",
+]
