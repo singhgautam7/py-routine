@@ -19,7 +19,7 @@ from __future__ import annotations
 import random
 import threading
 import time
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, TypeVar, Union
 
 from ._chan import _CLOSED, _TIMEOUT_INDEX, Chan, ChanClosed, RecvChan, SendChan, _Waiter
 
@@ -27,7 +27,10 @@ _RECV = "recv"
 _SEND = "send"
 
 
-def recv_case(ch) -> tuple:
+T = TypeVar("T")
+
+
+def recv_case(ch: "Union[Chan[T], RecvChan[T]]") -> tuple:
     """A select case that receives from ch (a Chan or RecvChan)."""
     if isinstance(ch, RecvChan):
         ch = ch._chan
@@ -36,7 +39,7 @@ def recv_case(ch) -> tuple:
     return (_RECV, ch, None)
 
 
-def send_case(ch, value: Any) -> tuple:
+def send_case(ch: "Union[Chan[T], SendChan[T]]", value: T) -> tuple:
     """A select case that sends value into ch (a Chan or SendChan)."""
     if isinstance(ch, SendChan):
         ch = ch._chan

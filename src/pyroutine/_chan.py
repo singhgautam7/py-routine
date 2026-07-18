@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from typing import Any, Deque, Optional, Tuple
+from typing import Any, Deque, Generic, Iterator, Optional, Tuple, TypeVar
+
+T = TypeVar("T")
 
 # internal markers, never exposed to users
 _UNSET = object()      # waiter has no result yet
@@ -73,8 +75,10 @@ class _Waiter:
         return self._event.wait(timeout)
 
 
-class Chan:
-    """A Go style channel.
+class Chan(Generic[T]):
+    """A Go style channel, generic over its element type: annotate with
+    Chan[int] and type checkers follow values through send/recv/select.
+    The type parameter is purely static, runtime behavior is identical.
 
     Chan() is unbuffered: send() blocks until a receiver takes the value,
     a true rendezvous. Chan(n) is buffered: send() only blocks once n
@@ -161,7 +165,7 @@ class Chan:
     # public API
     # ------------------------------------------------------------------ #
 
-    def send(self, value: Any, timeout: Optional[float] = None) -> None:
+    def send(self, value: T, timeout: Optional[float] = None) -> None:
         """Send a value. Blocks until delivered, or raises TimeoutError."""
         with self._lock:
             if self._poll_send_locked(value):
@@ -177,7 +181,7 @@ class Chan:
         if w.value is _CLOSED:
             raise ChanClosed("channel closed while sending")
 
-    def recv(self, timeout: Optional[float] = None) -> Any:
+    def recv(self, timeout: Optional[float] = None) -> T:
         """Receive a value. Blocks until one arrives, or raises TimeoutError.
         Raises ChanClosed once the channel is closed and drained."""
         with self._lock:
@@ -195,13 +199,13 @@ class Chan:
             raise ChanClosed("recv on closed channel")
         return w.value
 
-    def try_send(self, value: Any) -> bool:
+    def try_send(self, value: T) -> bool:
         """Non blocking send. True if delivered or queued. On an unbuffered
         channel this succeeds only when a receiver is already waiting."""
         with self._lock:
             return self._poll_send_locked(value)
 
-    def try_recv(self) -> Tuple[Any, bool]:
+    def try_recv(self) -> Tuple[Optional[T], bool]:
         """Non blocking receive. Returns (value, True) or (None, False)."""
         with self._lock:
             return self._poll_recv_locked()
@@ -241,7 +245,7 @@ class Chan:
         # number of buffered values, always 0 for unbuffered channels
         return len(self._buf)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[T]:
         while True:
             try:
                 yield self.recv()
@@ -258,16 +262,16 @@ class Chan:
         state = "closed" if self._closed else "open"
         return f"<Chan cap={self._maxsize} len={len(self._buf)} {state}>"
 
-    def recv_only(self) -> "RecvChan":
+    def recv_only(self) -> "RecvChan[T]":
         """A receive only view of this channel, like Go's `<-chan T`."""
         return RecvChan(self)
 
-    def send_only(self) -> "SendChan":
+    def send_only(self) -> "SendChan[T]":
         """A send only view of this channel, like Go's `chan<- T`."""
         return SendChan(self)
 
 
-class RecvChan:
+class RecvChan(Generic[T]):
     """A receive only view of a Chan, like Go's `<-chan T`.
 
     Hands code the ability to receive and iterate but not to send or
@@ -277,15 +281,15 @@ class RecvChan:
 
     __slots__ = ("_chan",)
 
-    def __init__(self, ch: Chan):
+    def __init__(self, ch: "Chan[T]"):
         if not isinstance(ch, Chan):
             raise TypeError("RecvChan wraps a Chan")
         self._chan = ch
 
-    def recv(self, timeout: Optional[float] = None) -> Any:
+    def recv(self, timeout: Optional[float] = None) -> T:
         return self._chan.recv(timeout)
 
-    def try_recv(self) -> Tuple[Any, bool]:
+    def try_recv(self) -> Tuple[Optional[T], bool]:
         return self._chan.try_recv()
 
     @property
@@ -299,14 +303,14 @@ class RecvChan:
     def __len__(self) -> int:
         return len(self._chan)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[T]:
         return iter(self._chan)
 
     def __repr__(self) -> str:
         return f"<RecvChan of {self._chan!r}>"
 
 
-class SendChan:
+class SendChan(Generic[T]):
     """A send only view of a Chan, like Go's `chan<- T`.
 
     Can send and close (closing is a sender's job in Go too) but not
@@ -315,15 +319,15 @@ class SendChan:
 
     __slots__ = ("_chan",)
 
-    def __init__(self, ch: Chan):
+    def __init__(self, ch: "Chan[T]"):
         if not isinstance(ch, Chan):
             raise TypeError("SendChan wraps a Chan")
         self._chan = ch
 
-    def send(self, value: Any, timeout: Optional[float] = None) -> None:
+    def send(self, value: T, timeout: Optional[float] = None) -> None:
         self._chan.send(value, timeout)
 
-    def try_send(self, value: Any) -> bool:
+    def try_send(self, value: T) -> bool:
         return self._chan.try_send(value)
 
     def close(self) -> None:

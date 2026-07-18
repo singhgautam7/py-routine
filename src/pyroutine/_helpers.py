@@ -6,14 +6,16 @@ programmers keep rewriting by hand, provided once.
 
 from __future__ import annotations
 
-from typing import Union
+from typing import TypeVar, Union
 
 from ._chan import Chan, ChanClosed, RecvChan
 from ._routines import go
 from ._select import recv_case, select
 
+T = TypeVar("T")
 
-def merge(*chans: Union[Chan, RecvChan], maxsize: int = 0) -> Chan:
+
+def merge(*chans: "Union[Chan[T], RecvChan[T]]", maxsize: int = 0) -> "Chan[T]":
     """Fan in: one channel carrying every value from all the inputs.
 
     The returned channel closes once every input is closed and drained.
