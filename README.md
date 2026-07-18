@@ -594,6 +594,132 @@ Method forms `rlock()/runlock()/lock()/unlock()` exist for when a
 in one routine, a waiting writer between the two acquisitions
 deadlocks you.
 
+## How it compares
+
+Against the tools Python already gives you:
+
+| capability | threading | asyncio | multiprocessing | pyroutine |
+|---|---|---|---|---|
+| parallel CPU on free threaded builds | yes | no (one loop) | yes | yes |
+| parallel CPU without copying/pickling data | yes | - | no | yes |
+| works with blocking libraries (requests, DB drivers) | yes | needs async ports | yes | yes |
+| no sync/async split in your codebase | yes | no, colored functions | yes | yes |
+| block on several sources at once | polling or extra threads | only inside the loop | no | `select()` |
+| rendezvous (unbuffered) channels | no | no | no | yes |
+| cancellation contexts with deadlines | manual flags | `Task.cancel` | terminate | `Context` |
+| first-error group teardown | manual | `TaskGroup` (3.11+) | no | `ErrGroup` |
+| exceptions surface at join | no, printed to stderr | yes | partially | yes, re-raised |
+| timers as first class events | no | callbacks | no | `after()`, `tick()` |
+| direction restricted endpoints | no | no | no | `RecvChan`, `SendChan` |
+
+The performance rows are backed by measurements, see the two sections
+below and the `benchmarks/` suite.
+
+## Where it shines, and where it is just threads
+
+pyroutine is real OS threads underneath. That means it inherits
+threading's strengths for free, and it cannot cheat physics where
+threading cannot. Honest expectations, all measured by
+`benchmarks/run.py` (numbers in the next section):
+
+Where it is faster than the usual tool:
+
+| workload | usual tool | measured edge | why |
+|---|---|---|---|
+| streaming pipelines (producer to consumer) | `queue.Queue` | about 2x | `Chan`'s waiter handoff wakes exactly one parked thread, `queue.Queue` takes more lock traffic per item |
+| parallel CPU over shared data, free threaded build | `multiprocessing` | 1.5 to 1.7x | routines read the data where it lives, `multiprocessing` pickles input to children and results back |
+| parallel CPU, free threaded build | asyncio | about 4.5x | an event loop runs on one core no matter how many you have |
+| two way coordination (request/response) | asyncio | about 3x | a rendezvous handoff is cheaper than two trips through an event loop |
+
+Where it is the same as threading, on purpose:
+
+| workload | outcome | evidence |
+|---|---|---|
+| I/O bound fan out (network calls, sleeps) | identical, the wait is the workload | `examples/benchmark_comparison.py`, all frameworks within 3% |
+| CPU bound on a GIL build | identical, both are stuck behind the GIL, use `multiprocessing` there | `cpu` scenario: threading 1.00s, pyroutine 0.99s, multiprocessing 0.29s |
+| CPU bound on a free threaded build | identical, both use all cores | `cpu` scenario: threading 0.17s, pyroutine 0.19s |
+| spawning cost | a routine is a thread, so spawning is thread creation either way. asyncio tasks are far cheaper to start, which is what the planned M:N scheduler addresses | `spawn` scenario |
+
+And one honest tradeoff: multiplexing N sources through `select()` costs
+about 2x the raw throughput of the threading idiom (a forwarder thread
+per source feeding one merged queue), because `select` locks all
+channels per operation. What you buy for that: zero extra threads, no
+sentinel protocol, and it reads like what it does. Compare:
+
+```python
+# threading: 8 sources need 8 forwarder threads, a merged queue,
+# and a sentinel-counting protocol
+merged = queue.Queue()
+def forward(q):
+    while (item := q.get()) is not None:
+        merged.put(item)
+    merged.put(None)
+for q in sources:
+    threading.Thread(target=forward, args=(q,)).start()
+closed = 0
+while closed < len(sources):
+    item = merged.get()
+    ...
+
+# pyroutine: just ask for the next ready value
+while live:
+    try:
+        idx, item = select(*[recv_case(c) for c in live])
+    except ChanClosed as e:
+        del live[e.index]
+```
+
+(For pure fan in, `merge(*sources)` is one line and hides even that.)
+
+## Benchmarks
+
+From `benchmarks/run.py`, which runs six verified scenarios across
+threading, asyncio, multiprocessing and pyroutine. Numbers below from an
+11 core Apple Silicon machine (arm64), Python 3.12.2 (GIL) and 3.14.6
+free threaded, seconds, lower is better, best per row and build in bold:
+
+| scenario | approach | 3.12 GIL | 3.14 free threaded |
+|---|---|---|---|
+| spawn, 3k units | threading | 0.12 | 0.21 |
+| | asyncio | **0.006** | **0.005** |
+| | pyroutine | 0.09 | 0.51 |
+| throughput, 200k messages | threading | 0.13 | 0.20 |
+| | asyncio | 0.09 | 0.10 |
+| | pyroutine | **0.07** | **0.09** |
+| pingpong, 20k round trips | threading | **0.18** | 0.17 |
+| | asyncio | 0.55 | 0.55 |
+| | pyroutine | 0.19 | **0.17** |
+| select8, 40k messages | threading | **0.07** | **0.18** |
+| | asyncio | 0.32 | 0.33 |
+| | pyroutine | 0.14 | 0.39 |
+| cpu, 8 x 4M crunch | sequential | 0.98 | 0.86 |
+| | threading | 1.00 | **0.17** |
+| | asyncio | 1.00 | 0.86 |
+| | multiprocessing | **0.29** | 0.28 |
+| | pyroutine | 0.99 | 0.19 |
+| words, 300k documents | sequential | 1.22 | 1.34 |
+| | multiprocessing | **0.37** | 0.45 |
+| | pyroutine | 1.15 | **0.27** |
+
+Reproduce with:
+
+```
+python benchmarks/run.py            # all scenarios
+python benchmarks/run.py cpu words  # a subset
+```
+
+The headline reads: channels beat `queue.Queue` for streaming on every
+build, rendezvous coordination matches threading and triples asyncio,
+and on free threaded Python the shared memory scenarios flip from
+"multiprocessing or nothing" to pyroutine winning outright. The spawn
+and select8 rows are the price of the current design (one thread per
+routine, all-channel locking in select), both on the roadmap.
+
+There are also two narrative examples: `examples/benchmark_comparison.py`
+(the same I/O + CPU pipeline in three frameworks) and
+`examples/shared_memory_showcase.py` (the multiprocessing pickling tax,
+in isolation).
+
 ## How it works
 
 One routine is one daemon OS thread, and every blocking operation registers
@@ -618,10 +744,9 @@ Because there is no busy waiting anywhere, an idle pipeline costs nothing.
 
 ## Roadmap
 
-- M:N scheduler so routines stop costing a full thread each
+- M:N scheduler so routines stop costing a full thread each (also fixes
+  the spawn row in the benchmarks)
 - Generic typing, `Chan[int]`
-- Benchmarks against threading, asyncio and multiprocessing on 3.14
-  free threaded builds
 - An asyncio bridge so channels can be awaited from async code
 
 ## Development

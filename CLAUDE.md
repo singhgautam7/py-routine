@@ -25,6 +25,9 @@ src/pyroutine/
                   with_deadline, Canceled, DeadlineExceeded
   _helpers.py     merge() fan in, utilities built on the public API
 tests/            pytest suite, includes race and stress tests
+benchmarks/       run.py, six scenarios vs threading/asyncio/
+                  multiprocessing, numbers published in the README
+
 ```
 
 ## What is currently implemented (v1 status)
@@ -124,15 +127,15 @@ Do not:
 1. M:N scheduler: multiplex routines over a small thread pool so a
    parked routine does not pin an OS thread. Must not change the public
    API. The tricky part is parking/unparking without the current
-   one thread per routine assumption in `Handle`.
-2. Benchmark suite (`benchmarks/`) comparing threading, asyncio,
-   multiprocessing and pyroutine on 3.14 GIL and free threaded builds.
-   Publish numbers in the README.
-3. Generic typing: `Chan[int]`, typed select cases. Runtime behavior
+   one thread per routine assumption in `Handle`. The benchmark spawn
+   and select8 scenarios are the yardstick for this work.
+2. Generic typing: `Chan[int]`, typed select cases. Runtime behavior
    unchanged, purely static.
-4. Context/cancellation in the spirit of Go's context package
-   (deadline propagation, done channels).
-5. asyncio bridge as `pyroutine.aio`: awaitable recv/send wrappers.
+3. asyncio bridge as `pyroutine.aio`: awaitable recv/send wrappers.
+
+Done and moved out of plans: context/cancellation (v0.1, `_context.py`)
+and the benchmark suite (`benchmarks/run.py`, numbers in the README,
+re-run on both builds after any `_chan.py` or `_select.py` change).
 
 ## Commands
 

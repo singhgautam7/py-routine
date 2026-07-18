@@ -25,4 +25,6 @@ First release.
   GILEnabledWarning at import when routines cannot run in parallel
   (yellow on terminals, NO_COLOR respected, disable with
   PYROUTINE_NO_GIL_WARNING=1)
+- Benchmark suite (benchmarks/run.py): six scenarios against threading,
+  asyncio and multiprocessing, numbers published in the README
 - Fully typed, pure Python, zero dependencies
