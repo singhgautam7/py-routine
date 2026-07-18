@@ -16,6 +16,7 @@ No busy waiting anywhere.
 
 from __future__ import annotations
 
+import contextlib
 import random
 import threading
 import time
@@ -175,10 +176,9 @@ class Timer:
     def _fire(self) -> None:
         with self._lock:
             self._fired = True
-        try:
+        with contextlib.suppress(ChanClosed):
+            # a losing race with stop() means nothing to deliver
             self.chan.try_send(time.monotonic())
-        except ChanClosed:
-            pass  # stopped at the last instant, nothing to deliver
         self.chan.close()
 
     def stop(self) -> bool:

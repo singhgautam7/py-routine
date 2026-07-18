@@ -113,8 +113,12 @@ def throughput_threading():
         while q.get() is not None:
             got += 1
 
-    t1, t2 = threading.Thread(target=producer), threading.Thread(target=consumer)
-    t1.start(), t2.start(), t1.join(), t2.join()
+    t1 = threading.Thread(target=producer)
+    t2 = threading.Thread(target=consumer)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
     assert got == THROUGHPUT_N
 
 
@@ -133,8 +137,10 @@ def throughput_pyroutine():
         for _ in ch:
             got += 1
 
-    h1, h2 = go(producer), go(consumer)
-    h1.join(), h2.join()
+    h1 = go(producer)
+    h2 = go(consumer)
+    h1.join()
+    h2.join()
     assert got == THROUGHPUT_N
 
 
@@ -481,10 +487,14 @@ def main():
     # ----------------------------------------------------------------- #
     # results table
     # ----------------------------------------------------------------- #
-    print(f"\n{BOLD}{MAGENTA}Results{RESET}  {DIM}(python {sys.version.split()[0]}, {build}){RESET}")
+    print(
+        f"\n{BOLD}{MAGENTA}Results{RESET}"
+        f"  {DIM}(python {sys.version.split()[0]}, {build}){RESET}"
+    )
     print(f"{DIM}┌────────────┬──────────────────┬─────────┬─────────────┐{RESET}")
     print(
-        f"{DIM}│{RESET} {BOLD}scenario   {RESET}{DIM}│{RESET} {BOLD}approach         {RESET}{DIM}│{RESET}"
+        f"{DIM}│{RESET} {BOLD}scenario   {RESET}{DIM}│{RESET}"
+        f" {BOLD}approach         {RESET}{DIM}│{RESET}"
         f" {BOLD}   time {RESET}{DIM}│{RESET} {BOLD}vs fastest  {RESET}{DIM}│{RESET}"
     )
     for key, _, results in all_results:
@@ -500,7 +510,8 @@ def main():
                 star = " "
             color = CYAN if name == "pyroutine" else ""
             print(
-                f"{DIM}│{RESET} {shown_key:<11}{DIM}│{RESET}{star}{color}{name:<17}{RESET}{DIM}│{RESET}"
+                f"{DIM}│{RESET} {shown_key:<11}{DIM}│{RESET}"
+                f"{star}{color}{name:<17}{RESET}{DIM}│{RESET}"
                 f" {BOLD}{t:6.3f}s{RESET} {DIM}│{RESET} {verdict}{DIM}│{RESET}"
             )
             shown_key = ""

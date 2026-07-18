@@ -15,7 +15,7 @@ except ModuleNotFoundError:
         0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
     )
 
-from pyroutine import Chan, WaitGroup, go, recv_case, select, after
+from pyroutine import Chan, ChanClosed, Timer, WaitGroup, go, recv_case, select
 
 jobs = Chan(4)
 results = Chan()
@@ -44,17 +44,20 @@ def main():
         wg.go(worker, wid)
     go(closer)
 
-    done_ch = after(5.0)  # safety timeout for the whole run
-    while True:
-        try:
-            idx, val = select(recv_case(results), recv_case(done_ch))
-        except Exception:
-            break  # results closed, all work done
-        if idx == 1:
-            print("timed out")
-            break
-        wid, n, sq = val
-        print(f"worker {wid}: {n}^2 = {sq}")
+    safety = Timer(5.0)  # safety timeout for the whole run
+    try:
+        while True:
+            try:
+                idx, val = select(recv_case(results), recv_case(safety.chan))
+            except ChanClosed:
+                break  # results closed, all work done
+            if idx == 1:
+                print("timed out")
+                break
+            wid, n, sq = val
+            print(f"worker {wid}: {n}^2 = {sq}")
+    finally:
+        safety.stop()  # do not leave a pending timer behind
 
 
 if __name__ == "__main__":

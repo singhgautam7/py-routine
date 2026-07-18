@@ -24,6 +24,7 @@ so no path holds a context lock and a channel lock at the same time.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from typing import Callable, List, Optional, Tuple
@@ -158,11 +159,8 @@ class _CancelContext(Context):
             self._parent._remove_child(self)
 
     def _remove_child(self, child: "_CancelContext") -> None:
-        with self._lock:
-            try:
-                self._children.remove(child)
-            except ValueError:
-                pass
+        with self._lock, contextlib.suppress(ValueError):
+            self._children.remove(child)
 
     def __repr__(self) -> str:
         err = self.err()

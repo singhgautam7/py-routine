@@ -4,8 +4,7 @@ import asyncio
 
 import pytest
 
-from pyroutine import Chan, ChanClosed, WaitGroup, go
-from pyroutine import aio
+from pyroutine import Chan, ChanClosed, WaitGroup, aio, go
 
 
 def test_aio_recv_fast_path_buffered():

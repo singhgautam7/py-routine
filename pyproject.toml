@@ -50,7 +50,17 @@ dev = [
     "pytest>=8.0",
     "pytest-timeout>=2.3",
     "mypy>=1.10",
+    "ruff>=0.5",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+# UP rules are excluded on purpose: PEP 604 unions and bare builtin
+# generics are not safe in every position on 3.9, our oldest target
+select = ["E", "F", "W", "I", "B", "SIM"]
 
 [tool.mypy]
 # mypy no longer accepts 3.9 as a target; the source stays 3.9

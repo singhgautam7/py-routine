@@ -34,12 +34,15 @@ def merge(*chans: "Union[Chan[T], RecvChan[T]]", maxsize: int = 0) -> "Chan[T]":
 
     def pump() -> None:
         remaining = list(chans)
+        # rebuilt only when an input closes, not once per message
+        cases = [recv_case(c) for c in remaining]
         while remaining:
             try:
-                _, value = select(*[recv_case(c) for c in remaining])
+                _, value = select(*cases)
             except ChanClosed as e:
                 assert e.index is not None  # select always sets it
                 del remaining[e.index]
+                cases = [recv_case(c) for c in remaining]
                 continue
             try:
                 out.send(value)

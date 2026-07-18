@@ -1,5 +1,6 @@
 """Tests for Mutex, RWMutex and ErrGroup."""
 
+import contextlib
 import time
 
 import pytest
@@ -13,7 +14,6 @@ from pyroutine import (
     WaitGroup,
     go,
 )
-
 
 # --------------------------------------------------------------------- #
 # Mutex
@@ -58,10 +58,8 @@ def test_rwmutex_readers_share():
     def reader():
         with rw.read():
             inside.send(True)
-            try:
+            with contextlib.suppress(ChanClosed):
                 release.recv()
-            except ChanClosed:
-                pass
 
     go(reader)
     go(reader)

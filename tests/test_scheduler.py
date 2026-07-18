@@ -5,8 +5,7 @@ import time
 
 import pytest
 
-from pyroutine import Chan, WaitGroup, go
-from pyroutine import _routines
+from pyroutine import Chan, ChanClosed, WaitGroup, _routines, go
 
 
 def test_workers_are_reused_for_sequential_spawns():
@@ -39,8 +38,8 @@ def test_burst_of_blocked_routines_all_get_threads():
     assert go(lambda: "alive").result(timeout=5) == "alive"
     gate.close()
     for h in handles:
-        with pytest.raises(Exception):
-            h.result(timeout=10)  # ChanClosed from gate.recv()
+        with pytest.raises(ChanClosed):
+            h.result(timeout=10)  # gate.recv() died when the gate closed
 
 
 def test_exceptions_still_reraised_from_pooled_workers():

@@ -214,7 +214,10 @@ def main():
         f"  I/O stage   : {CYAN}{N_JOBS}{RESET} calls of {CYAN}{IO_DELAY:.2f}s{RESET}"
         f" over {CYAN}{WORKERS}{RESET} workers"
     )
-    print(f"  CPU stage   : {CYAN}{CPU_TASKS}{RESET} tasks of {CYAN}{CPU_LOOP:,}{RESET} loop iterations")
+    print(
+        f"  CPU stage   : {CYAN}{CPU_TASKS}{RESET} tasks"
+        f" of {CYAN}{CPU_LOOP:,}{RESET} loop iterations"
+    )
     sequential_estimate = N_JOBS * IO_DELAY
     print(
         f"  {DIM}the I/O stage is {io_floor:.1f}s of pure waiting ({N_JOBS}/{WORKERS}"
@@ -237,7 +240,10 @@ def main():
         io_t, io_res = timed(io_fn)
         if sorted(io_res) != EXPECTED:
             raise AssertionError(f"{name} produced wrong I/O results")
-        print(f"    I/O pipeline : {BOLD}{io_t:6.2f}s{RESET}  {DIM}({N_JOBS} jobs, all results verified){RESET}")
+        print(
+            f"    I/O pipeline : {BOLD}{io_t:6.2f}s{RESET}"
+            f"  {DIM}({N_JOBS} jobs, all results verified){RESET}"
+        )
         cpu_t, _ = timed(cpu_fn)
         print(f"    CPU fan out  : {BOLD}{cpu_t:6.2f}s{RESET}  {DIM}({CPU_TASKS} tasks){RESET}")
         total = io_t + cpu_t
@@ -287,7 +293,8 @@ def main():
         print(
             f"{YELLOW}Note:{RESET} with the GIL enabled, every framework is bound by the same"
             f" waits, so the\nconcurrent approaches finish close together (and roughly"
-            f" {BOLD}{sequential_estimate / slowest:.0f}x{RESET} faster than\nsequential code would)."
+            f" {BOLD}{sequential_estimate / slowest:.0f}x{RESET} faster"
+            f" than\nsequential code would)."
             f" The interesting column is ergonomics: compare pyroutine_io()\nagainst threading_io()"
             f" in this file. On a free threaded build (3.13+/3.14, GIL\ndisabled) the CPU column"
             f" also drops by up to {CPU_TASKS}x for the thread based frameworks."

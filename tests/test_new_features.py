@@ -2,6 +2,7 @@
 fast path, and the once/synchronized decorators."""
 
 import asyncio
+import contextlib
 import threading
 import time
 
@@ -14,6 +15,7 @@ from pyroutine import (
     Mutex,
     Timer,
     WaitGroup,
+    aio,
     go,
     once,
     recv_case,
@@ -21,8 +23,6 @@ from pyroutine import (
     send_case,
     synchronized,
 )
-from pyroutine import aio
-
 
 # --------------------------------------------------------------------- #
 # Timer
@@ -106,10 +106,8 @@ def test_errgroup_limit_caps_concurrency():
         with lock:
             active[0] += 1
             peak[0] = max(peak[0], active[0])
-        try:
+        with contextlib.suppress(ChanClosed):
             release.recv()
-        except ChanClosed:
-            pass
         with lock:
             active[0] -= 1
 

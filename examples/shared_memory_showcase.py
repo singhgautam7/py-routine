@@ -109,7 +109,10 @@ def main():
         if ft
         else f"{YELLOW}enabled{RESET}"
     )
-    print(f"  python  : {CYAN}{sys.version.split()[0]}{RESET}   GIL: {gil_note}   workers: {CYAN}{WORKERS}{RESET}")
+    print(
+        f"  python  : {CYAN}{sys.version.split()[0]}{RESET}"
+        f"   GIL: {gil_note}   workers: {CYAN}{WORKERS}{RESET}"
+    )
     print(f"  {DIM}building the corpus in memory...{RESET}")
     docs = build_corpus()
     print(f"{DIM}{'─' * 66}{RESET}")
@@ -140,7 +143,8 @@ def main():
     print(f"\n{BOLD}{MAGENTA}Results{RESET}")
     print(f"{DIM}┌──────────────────┬─────────┬──────────────────────┐{RESET}")
     print(
-        f"{DIM}│{RESET} {BOLD}approach         {RESET}{DIM}│{RESET} {BOLD}   time {RESET}{DIM}│{RESET}"
+        f"{DIM}│{RESET} {BOLD}approach         {RESET}{DIM}│{RESET}"
+        f" {BOLD}   time {RESET}{DIM}│{RESET}"
         f" {BOLD}vs sequential        {RESET}{DIM}│{RESET}"
     )
     print(f"{DIM}├──────────────────┼─────────┼──────────────────────┤{RESET}")
