@@ -257,3 +257,88 @@ class Chan:
     def __repr__(self) -> str:
         state = "closed" if self._closed else "open"
         return f"<Chan cap={self._maxsize} len={len(self._buf)} {state}>"
+
+    def recv_only(self) -> "RecvChan":
+        """A receive only view of this channel, like Go's `<-chan T`."""
+        return RecvChan(self)
+
+    def send_only(self) -> "SendChan":
+        """A send only view of this channel, like Go's `chan<- T`."""
+        return SendChan(self)
+
+
+class RecvChan:
+    """A receive only view of a Chan, like Go's `<-chan T`.
+
+    Hands code the ability to receive and iterate but not to send or
+    close, so a consumer cannot corrupt the producer's side of the
+    protocol. recv_case() accepts it. Get one from Chan.recv_only().
+    """
+
+    __slots__ = ("_chan",)
+
+    def __init__(self, ch: Chan):
+        if not isinstance(ch, Chan):
+            raise TypeError("RecvChan wraps a Chan")
+        self._chan = ch
+
+    def recv(self, timeout: Optional[float] = None) -> Any:
+        return self._chan.recv(timeout)
+
+    def try_recv(self) -> Tuple[Any, bool]:
+        return self._chan.try_recv()
+
+    @property
+    def closed(self) -> bool:
+        return self._chan.closed
+
+    @property
+    def cap(self) -> int:
+        return self._chan.cap
+
+    def __len__(self) -> int:
+        return len(self._chan)
+
+    def __iter__(self):
+        return iter(self._chan)
+
+    def __repr__(self) -> str:
+        return f"<RecvChan of {self._chan!r}>"
+
+
+class SendChan:
+    """A send only view of a Chan, like Go's `chan<- T`.
+
+    Can send and close (closing is a sender's job in Go too) but not
+    receive. send_case() accepts it. Get one from Chan.send_only().
+    """
+
+    __slots__ = ("_chan",)
+
+    def __init__(self, ch: Chan):
+        if not isinstance(ch, Chan):
+            raise TypeError("SendChan wraps a Chan")
+        self._chan = ch
+
+    def send(self, value: Any, timeout: Optional[float] = None) -> None:
+        self._chan.send(value, timeout)
+
+    def try_send(self, value: Any) -> bool:
+        return self._chan.try_send(value)
+
+    def close(self) -> None:
+        self._chan.close()
+
+    @property
+    def closed(self) -> bool:
+        return self._chan.closed
+
+    @property
+    def cap(self) -> int:
+        return self._chan.cap
+
+    def __len__(self) -> int:
+        return len(self._chan)
+
+    def __repr__(self) -> str:
+        return f"<SendChan of {self._chan!r}>"

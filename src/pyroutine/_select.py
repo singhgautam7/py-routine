@@ -21,23 +21,27 @@ import threading
 import time
 from typing import Any, Optional, Tuple
 
-from ._chan import _CLOSED, _TIMEOUT_INDEX, Chan, ChanClosed, _Waiter
+from ._chan import _CLOSED, _TIMEOUT_INDEX, Chan, ChanClosed, RecvChan, SendChan, _Waiter
 
 _RECV = "recv"
 _SEND = "send"
 
 
-def recv_case(ch: Chan) -> tuple:
-    """A select case that receives from ch."""
+def recv_case(ch) -> tuple:
+    """A select case that receives from ch (a Chan or RecvChan)."""
+    if isinstance(ch, RecvChan):
+        ch = ch._chan
     if not isinstance(ch, Chan):
-        raise TypeError("recv_case() expects a Chan")
+        raise TypeError("recv_case() expects a Chan or RecvChan")
     return (_RECV, ch, None)
 
 
-def send_case(ch: Chan, value: Any) -> tuple:
-    """A select case that sends value into ch."""
+def send_case(ch, value: Any) -> tuple:
+    """A select case that sends value into ch (a Chan or SendChan)."""
+    if isinstance(ch, SendChan):
+        ch = ch._chan
     if not isinstance(ch, Chan):
-        raise TypeError("send_case() expects a Chan")
+        raise TypeError("send_case() expects a Chan or SendChan")
     return (_SEND, ch, value)
 
 
@@ -136,6 +140,39 @@ def after(seconds: float) -> Chan:
         except ChanClosed:
             pass
         ch.close()
+
+    t = threading.Timer(seconds, fire)
+    t.daemon = True
+    t.start()
+    return ch
+
+
+def tick(seconds: float) -> Chan:
+    """A channel that receives the current monotonic time roughly every
+    `seconds`, like Go's time.Tick. The channel has a buffer of one, so
+    a slow receiver simply misses ticks, they never queue up.
+
+    Close the returned channel to stop the ticker. Until then it costs
+    one pending timer, nothing more:
+
+        beat = tick(1.0)
+        for t in beat:
+            heartbeat()
+            if shutting_down:
+                beat.close()
+    """
+    if seconds <= 0:
+        raise ValueError("tick() needs a positive interval")
+    ch = Chan(1)
+
+    def fire() -> None:
+        try:
+            ch.try_send(time.monotonic())
+        except ChanClosed:
+            return  # the user closed the channel, stop rescheduling
+        t = threading.Timer(seconds, fire)
+        t.daemon = True
+        t.start()
 
     t = threading.Timer(seconds, fire)
     t.daemon = True

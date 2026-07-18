@@ -25,6 +25,18 @@ def test_gil_warning_fires_exactly_when_gil_is_enabled():
         assert "pyroutine:" in str(hits[0].message)
 
 
+def test_env_var_silences_gil_warning(monkeypatch):
+    monkeypatch.setenv("PYROUTINE_NO_GIL_WARNING", "1")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        importlib.reload(pyroutine)
+    assert not [
+        w for w in caught if issubclass(w.category, pyroutine.GILEnabledWarning)
+    ]
+    monkeypatch.undo()
+    importlib.reload(pyroutine)  # restore normal module state
+
+
 def test_new_names_are_exported():
     assert "free_threading" in pyroutine.__all__
     assert "GILEnabledWarning" in pyroutine.__all__

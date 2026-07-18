@@ -16,10 +16,14 @@ Layout:
 ```
 src/pyroutine/
   __init__.py     public API surface, keep it small and stable
-  _chan.py        Chan, ChanClosed, _Waiter (the core, most delicate file)
-  _select.py      select(), recv_case(), send_case(), after()
+  _chan.py        Chan, ChanClosed, _Waiter, RecvChan/SendChan views
+                  (the core, most delicate file)
+  _select.py      select(), recv_case(), send_case(), after(), tick()
   _routines.py    Handle, go(), @routine
-  _sync.py        WaitGroup, Once
+  _sync.py        WaitGroup, Once, Mutex, RWMutex, ErrGroup
+  _context.py     Context, background(), with_cancel/with_timeout/
+                  with_deadline, Canceled, DeadlineExceeded
+  _helpers.py     merge() fan in, utilities built on the public API
 tests/            pytest suite, includes race and stress tests
 ```
 

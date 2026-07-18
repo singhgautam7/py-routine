@@ -9,13 +9,24 @@ Designed with free threaded CPython (3.13+, GIL disabled) in mind, but
 works on every supported CPython. See the README for the full tour.
 """
 
+import os as _os
 import sys as _sys
 import warnings as _warnings
 
-from ._chan import Chan, ChanClosed
+from ._chan import Chan, ChanClosed, RecvChan, SendChan
+from ._context import (
+    Canceled,
+    Context,
+    DeadlineExceeded,
+    background,
+    with_cancel,
+    with_deadline,
+    with_timeout,
+)
+from ._helpers import merge
 from ._routines import Handle, go, routine
-from ._select import after, recv_case, select, send_case
-from ._sync import Once, WaitGroup
+from ._select import after, recv_case, select, send_case, tick
+from ._sync import ErrGroup, Mutex, Once, RWMutex, WaitGroup
 
 __version__ = "0.1.0"
 
@@ -38,30 +49,47 @@ def free_threading() -> bool:
         return False
 
 
-if not free_threading():
-    _warnings.warn(
+if not free_threading() and not _os.environ.get("PYROUTINE_NO_GIL_WARNING"):
+    _msg = (
         "pyroutine: this interpreter has the GIL enabled, so routines "
         "interleave on one core instead of running in parallel. I/O bound "
         "and coordination heavy code is fine, CPU bound routines will not "
         "speed up. For real parallelism use free threaded CPython (3.13+, "
-        "GIL disabled). To silence, add before the first import: "
-        "warnings.filterwarnings('ignore', message='pyroutine:')",
-        GILEnabledWarning,
-        stacklevel=2,
+        "GIL disabled). Set PYROUTINE_NO_GIL_WARNING=1 to silence this "
+        "warning."
     )
+    if getattr(_sys.stderr, "isatty", lambda: False)() and not _os.environ.get(
+        "NO_COLOR"
+    ):
+        _msg = "\033[33m" + _msg + "\033[0m"
+    _warnings.warn(_msg, GILEnabledWarning, stacklevel=2)
 
 __all__ = [
+    "Canceled",
     "Chan",
     "ChanClosed",
+    "Context",
+    "DeadlineExceeded",
+    "ErrGroup",
     "GILEnabledWarning",
     "Handle",
+    "Mutex",
     "Once",
+    "RWMutex",
+    "RecvChan",
+    "SendChan",
     "WaitGroup",
     "after",
+    "background",
     "free_threading",
     "go",
+    "merge",
     "recv_case",
     "routine",
     "select",
     "send_case",
+    "tick",
+    "with_cancel",
+    "with_deadline",
+    "with_timeout",
 ]

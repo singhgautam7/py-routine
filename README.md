@@ -81,16 +81,21 @@ still the recommended setup for development.
 Routines are real OS threads, always. What differs by interpreter is
 whether those threads can run Python bytecode simultaneously:
 
-- On a standard CPython build the GIL lets only one thread run Python code
-  at a time. Routines interleave, which is exactly what you want for I/O
-  bound and coordination heavy work, but CPU bound routines will not get
-  faster.
-- On a free threaded build (CPython 3.13+ compiled with the GIL disabled,
-  the `python3.13t` / `python3.14t` binaries) the same routines run in
-  parallel across cores with zero code changes.
+- On Python 3.12 and older there is no way around the GIL at all. Only
+  one thread runs Python code at a time, routines interleave. That is
+  exactly what you want for I/O bound and coordination heavy work, but
+  CPU bound routines will not get faster, period.
+- On Python 3.13 and 3.14 the GIL is *optional*, but only in the separate
+  free threaded build (the `python3.13t` / `python3.14t` binaries, on
+  Homebrew `brew install python-freethreading`). A normal 3.13/3.14
+  install still has the GIL and behaves like 3.12.
+- On a free threaded build the same routines run in parallel across all
+  cores with zero code changes. In our benchmark
+  (`examples/benchmark_comparison.py`) the CPU bound stage drops about
+  5x moving from 3.12 to 3.14 free threaded on an 8 core machine.
 
 Because this difference is easy to miss, `pyroutine` warns once at import
-time when the GIL is enabled:
+time when the GIL is enabled, in yellow when stderr is a terminal:
 
 ```
 GILEnabledWarning: pyroutine: this interpreter has the GIL enabled, so
@@ -106,22 +111,35 @@ pyroutine.free_threading()   # True only on a free threaded build with GIL off
 ```
 
 If you know what you are doing (say, an I/O bound service on a regular
-build) silence the warning before the first import:
+build), disable the warning with an environment variable, either outside:
+
+```
+PYROUTINE_NO_GIL_WARNING=1 python app.py
+```
+
+or at the top of your entry point, before the first import:
 
 ```python
-import warnings
-warnings.filterwarnings("ignore", message="pyroutine:")
+import os
+os.environ.setdefault("PYROUTINE_NO_GIL_WARNING", "1")
 import pyroutine
 ```
 
-or run Python with `-W "ignore:pyroutine:"`.
+The warning also respects the `NO_COLOR` convention (color is dropped)
+and standard `warnings` filters against the `GILEnabledWarning` category
+still apply if you prefer that machinery.
 
 ## The full API tour
 
-Everything the package exports, with examples. The public surface is
-deliberately small: `go`, `routine`, `Handle`, `Chan`, `ChanClosed`,
-`select`, `recv_case`, `send_case`, `after`, `WaitGroup`, `Once`,
-`free_threading`, `GILEnabledWarning`.
+Everything the package exports, with examples:
+
+- Routines: `go`, `routine`, `Handle`
+- Channels: `Chan`, `ChanClosed`, `RecvChan`, `SendChan`, `merge`
+- Multiplexing and timers: `select`, `recv_case`, `send_case`, `after`, `tick`
+- Cancellation: `Context`, `background`, `with_cancel`, `with_timeout`,
+  `with_deadline`, `Canceled`, `DeadlineExceeded`
+- Sync: `WaitGroup`, `ErrGroup`, `Once`, `Mutex`, `RWMutex`
+- Interpreter introspection: `free_threading`, `GILEnabledWarning`
 
 ### Spawning routines: `go()`
 
@@ -399,6 +417,183 @@ once.do(init_pool)
 Later calls return immediately without calling the function, including
 when the first call raised.
 
+### `tick()`: repeating timer channels
+
+Where `after()` fires once, `tick(seconds)` returns a channel that
+receives the current `time.monotonic()` roughly every interval, like
+Go's `time.Tick`. The channel is buffered at one, so a slow receiver
+misses ticks instead of piling them up. Close the channel to stop the
+ticker:
+
+```python
+from pyroutine import tick
+
+beat = tick(1.0)
+for t in beat:
+    push_heartbeat()
+    if shutting_down:
+        beat.close()      # stops the ticker, the loop exits
+```
+
+Inside a select it gives you periodic work alongside real events:
+
+```python
+idx, val = select(recv_case(events), recv_case(beat))
+if idx == 1:
+    flush_metrics()
+```
+
+### Context and cancellation
+
+Go programs thread a `context.Context` through everything that should
+stop on request or on a deadline. Same here:
+
+```python
+from pyroutine import with_cancel, with_timeout, recv_case, select, ChanClosed
+
+ctx, cancel = with_cancel()          # child of background() by default
+
+def worker(ctx, jobs):
+    while True:
+        try:
+            idx, job = select(recv_case(jobs), recv_case(ctx.done()))
+        except ChanClosed as e:
+            return                   # jobs closed, or ctx cancelled
+        process(job)
+
+go(worker, ctx, jobs)
+...
+cancel()                             # every routine watching ctx unwinds
+```
+
+The pieces:
+
+- `ctx.done()` is a channel that closes on cancellation. Receiving from
+  it (directly or in a `select`) raises `ChanClosed` at that moment,
+  which is the wake up signal, the same way a closed data channel ends
+  a `for` loop.
+- `ctx.err()` is `None` while live, then a `Canceled` or
+  `DeadlineExceeded` explaining why it died. `ctx.cancelled()` is the
+  boolean shortcut. Cheap enough to check inside loops.
+- `with_cancel(parent)` derives a child context. Cancelling a parent
+  cancels all its children, transitively. Cancelling a child never
+  touches the parent.
+- `with_timeout(seconds, parent)` and `with_deadline(monotonic_time,
+  parent)` self cancel with `DeadlineExceeded` when time runs out. A
+  child's deadline is capped to its parent's, deadlines only ever
+  shrink down the tree.
+- `DeadlineExceeded` subclasses both `Canceled` (one except clause
+  handles every cancellation) and `TimeoutError` (reads naturally).
+- `background()` is the empty root: never cancelled, no deadline.
+
+```python
+ctx, cancel = with_timeout(5.0)
+try:
+    result = fetch_with_ctx(ctx, url)
+finally:
+    cancel()    # always call cancel, it detaches the child from the parent
+```
+
+### `ErrGroup`: WaitGroup with error handling
+
+`WaitGroup` waits; `ErrGroup` waits and deals with failure, like
+`golang.org/x/sync/errgroup`. The first routine that raises cancels the
+group's context, and `wait()` re-raises that first exception:
+
+```python
+from pyroutine import ErrGroup
+
+eg = ErrGroup()
+for url in urls:
+    eg.go(fetch_into_db, url, eg.ctx)   # pass eg.ctx so they can stop early
+
+eg.wait()    # blocks for all, then re-raises the first error, if any
+```
+
+Routines that might run long watch `eg.ctx` (via `select` on
+`eg.ctx.done()` or `eg.ctx.err()` checks) and bail out once a sibling
+has failed. `eg.go()` still returns the routine's `Handle` when you
+want individual results, and `wait()` cancels the group context on the
+way out even on success, exactly like Go.
+
+### Directional channels: `RecvChan` and `SendChan`
+
+Go APIs say `chan<- T` (send only) or `<-chan T` (receive only) to make
+misuse impossible. The equivalent here:
+
+```python
+ch = Chan(8)
+
+def producer(out):          # out: SendChan, cannot recv or iterate
+    for item in source:
+        out.send(item)
+    out.close()             # closing is the sender's job, so it is allowed
+
+def consumer(inp):          # inp: RecvChan, cannot send or close
+    for item in inp:
+        handle(item)
+
+go(producer, ch.send_only())
+go(consumer, ch.recv_only())
+```
+
+The views add no overhead worth mentioning, they just delegate to the
+underlying channel, and `recv_case()`/`send_case()` accept the matching
+view. Passing the wrong direction to a select case is a `TypeError`.
+
+### `merge()`: fan in
+
+Combining several channels into one is the utility every Go codebase
+reinvents. Provided here once:
+
+```python
+from pyroutine import merge
+
+out = merge(feed_a, feed_b, feed_c)   # accepts Chan or RecvChan views
+for value in out:                     # everything from all three feeds
+    handle(value)
+# the loop ends once ALL inputs are closed and drained
+```
+
+One background routine multiplexes all inputs with `select`, so merging
+N channels costs one thread, not N. `merge(..., maxsize=32)` buffers the
+output. Closing the output channel early stops the merge.
+
+### `Mutex` and `RWMutex`
+
+Channels first, but sometimes a plain lock is the honest answer.
+`Mutex` is `threading.Lock` with Go's names and context manager
+support:
+
+```python
+from pyroutine import Mutex
+
+m = Mutex()
+with m:                     # or m.lock() / m.unlock()
+    shared += 1
+```
+
+`RWMutex` is `sync.RWMutex`, which the stdlib does not offer: any
+number of readers or exactly one writer, with writer preference so a
+steady stream of readers cannot starve writers:
+
+```python
+from pyroutine import RWMutex
+
+rw = RWMutex()
+
+with rw.read():             # many routines may hold this at once
+    snapshot = dict(config)
+
+with rw.write():            # exclusive
+    config[key] = value
+```
+
+Method forms `rlock()/runlock()/lock()/unlock()` exist for when a
+`with` block does not fit. As in Go, do not take `rlock()` recursively
+in one routine, a waiting writer between the two acquisitions
+deadlocks you.
+
 ## How it works
 
 One routine is one daemon OS thread, and every blocking operation registers
@@ -427,7 +622,6 @@ Because there is no busy waiting anywhere, an idle pipeline costs nothing.
 - Generic typing, `Chan[int]`
 - Benchmarks against threading, asyncio and multiprocessing on 3.14
   free threaded builds
-- Context/cancellation, in the spirit of Go's context package
 - An asyncio bridge so channels can be awaited from async code
 
 ## Development
