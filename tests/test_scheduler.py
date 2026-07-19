@@ -62,6 +62,48 @@ def test_thread_named_after_routine_while_running():
     assert "report_name" in name
 
 
+def test_thousands_of_blocked_routines_with_small_stacks():
+    """M:N step 2: parked routines are affordable in bulk when worker
+    stacks are small. 2000 routines block simultaneously, and the
+    scheduler must stay fully live for newcomers throughout."""
+    import contextlib
+
+    from pyroutine import ChanClosed, set_worker_stack_size
+
+    try:
+        set_worker_stack_size(512 * 1024)
+    except ValueError:
+        pytest.skip("platform rejects custom thread stack sizes")
+    try:
+        n = 2000
+        gate = Chan()
+        started = WaitGroup()
+        for _ in range(n):
+            started.add(1)
+
+        def blocker():
+            started.done()
+            with contextlib.suppress(ChanClosed):
+                gate.recv()
+
+        handles = [go(blocker) for _ in range(n)]
+        assert started.wait(timeout=60)  # every routine reached its park
+        assert go(lambda: "alive").result(timeout=10) == "alive"
+        gate.close()
+        for h in handles:
+            assert h.join(timeout=30)
+    finally:
+        set_worker_stack_size(0)
+
+
+def test_set_worker_stack_size_validates():
+    from pyroutine import set_worker_stack_size
+
+    with pytest.raises((ValueError, TypeError)):
+        set_worker_stack_size(1)  # far below any platform minimum
+    set_worker_stack_size(0)  # default restore always works
+
+
 def test_idle_workers_retire(monkeypatch):
     monkeypatch.setattr(_routines, "_IDLE_TIMEOUT", 0.05)
     handles = [go(int) for _ in range(10)]

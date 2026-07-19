@@ -62,4 +62,7 @@ First release.
   "all goroutines are asleep"
 - Worker threads drop task references while idle, finished Handles are
   collectable immediately
+- set_worker_stack_size(): tunable worker thread stacks, making
+  thousands of concurrently parked routines affordable (stress tested
+  with 2000 blocked at 512 KiB stacks)
 - Fully typed, pure Python, zero dependencies

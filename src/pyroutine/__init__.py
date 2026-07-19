@@ -29,7 +29,7 @@ from ._debug import (
     enable_deadlock_detection,
 )
 from ._helpers import merge
-from ._routines import Handle, go, routine, set_excepthook
+from ._routines import Handle, go, routine, set_excepthook, set_worker_stack_size
 from ._select import Select, Timer, after, recv_case, select, send_case, tick
 from ._sync import ErrGroup, Mutex, Once, RWMutex, WaitGroup, once, synchronized
 
@@ -100,6 +100,7 @@ __all__ = [
     "select",
     "send_case",
     "set_excepthook",
+    "set_worker_stack_size",
     "synchronized",
     "tick",
     "with_cancel",

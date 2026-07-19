@@ -243,9 +243,8 @@ body = h.result(timeout=2.0)   # raises TimeoutError if still running
 h.done                  # non blocking: has it finished yet?
 ```
 
-Exceptions raised inside a routine are never printed to stderr and never
-silently dropped. They are captured and re-raised, with their original
-traceback, from `result()`:
+Exceptions raised inside a routine are never silently dropped. They are
+captured and re-raised, with their original traceback, from `result()`:
 
 ```python
 def boom():
@@ -256,10 +255,19 @@ h.join()          # completes fine, the routine is simply done
 h.result()        # raises ValueError: nope, right here in the caller
 ```
 
-If you never call `result()`, the exception is dropped when the handle is
-garbage collected, same as Go's rule that a panic you do not recover from
-belongs to the goroutine that raised it. Call `result()` for anything whose
-failure you care about.
+If you never call `result()`, the exception is still reported when the
+handle is garbage collected, through the excepthook described in the
+Failure visibility section. Nothing vanishes.
+
+Planning to park thousands of routines at once? Shrink the worker
+stacks first; the OS default (often 8 MiB of reserved address space
+per thread) is sized for call depths you probably do not have:
+
+```python
+from pyroutine import set_worker_stack_size
+
+set_worker_stack_size(512 * 1024)   # affects workers created afterwards
+```
 
 ### The `@routine` decorator
 
@@ -1013,9 +1021,12 @@ nothing.
   crunching. On free threaded builds that restriction disappears. You get
   a `GILEnabledWarning` at import so nobody finds out in production.
 - A *blocked* routine still occupies an OS thread (running ones do too,
-  of course). Hundreds of concurrently blocked routines are fine,
-  hundreds of thousands are not. Full M:N parking is the headline
-  roadmap item.
+  of course). What that costs is mostly stack reservation, and it is
+  tunable: `set_worker_stack_size(512 * 1024)` makes tens of thousands
+  of concurrently parked routines practical (the test suite proves
+  liveness with thousands blocked at once). Truly Go-scale counts need
+  full M:N parking, which remains the headline roadmap item because it
+  requires continuation support pure stdlib Python does not offer.
 - The generic `Chan[int]` typing is static only, nothing checks types at
   runtime, exactly like Go's maps and channels before 1.18 generics.
 

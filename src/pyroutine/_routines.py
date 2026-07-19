@@ -43,6 +43,31 @@ def active_routines() -> int:
 # how long an idle worker waits for new work before its thread exits
 _IDLE_TIMEOUT = 5.0
 
+# stack size for newly created worker threads, 0 = platform default.
+# threading.stack_size() is process global state, so setting it around
+# thread creation is serialized by _stack_lock
+_worker_stack_size = 0
+_stack_lock = threading.Lock()
+
+
+def set_worker_stack_size(nbytes: int) -> None:
+    """Stack size in bytes for worker threads created from now on, 0
+    restores the platform default. Existing workers are unaffected.
+
+    A blocked routine pins its worker thread, and the thread stack is
+    what bounds how many concurrently blocked routines you can afford:
+    at the common 8 MiB default, 50k parked routines reserve ~400 GiB
+    of address space, at 512 KiB they reserve ~25 GiB. Small stacks
+    crash deep recursion, treat 512 KiB as the floor unless you know
+    your call depths. Raises ValueError for sizes the platform rejects
+    (generally anything under 32 KiB)."""
+    global _worker_stack_size
+    with _stack_lock:
+        if nbytes:
+            previous = threading.stack_size(nbytes)  # validates
+            threading.stack_size(previous)
+        _worker_stack_size = nbytes
+
 # a task is (handle, fn, args, kwargs, name)
 _Task = Tuple["Handle", Callable, tuple, dict, str]
 
@@ -71,6 +96,18 @@ class _Scheduler:
             worker = self._idle.pop() if self._idle else None
         if worker is not None:
             worker.mailbox.put(task)
+            return
+        size = _worker_stack_size
+        if size:
+            # stack_size is process global, keep the window serialized
+            with _stack_lock:
+                previous = threading.stack_size(size)
+                try:
+                    worker = _Worker()
+                    worker.mailbox.put(task)
+                    worker.thread.start()
+                finally:
+                    threading.stack_size(previous)
         else:
             worker = _Worker()
             worker.mailbox.put(task)
