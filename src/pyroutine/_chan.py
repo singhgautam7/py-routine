@@ -50,13 +50,29 @@ class ChanClosed(Exception):
 
 class _Waiter:
     """One parked operation. select() shares a single waiter across all
-    of its cases, which is why completion has to be a compare and set."""
+    of its cases, which is why completion has to be a compare and set.
 
-    __slots__ = ("_lock", "_event", "index", "value")
+    Parking uses a pre-acquired Lock instead of an Event: finish()
+    releases it, wait() acquires it. A bare lock is several times
+    cheaper to allocate than an Event (which carries a Condition), and
+    this is the one allocation on every blocking path. The contract
+    that makes a single-release lock sufficient: every caller invokes
+    wait() until it returns True at most once (a timed wait that
+    returns False may be followed by exactly one untimed wait).
+
+    A free list of waiters was considered and rejected: close() commits
+    its snapshot of waiters OUTSIDE the channel lock, so a stale close
+    could commit a recycled waiter. Do not pool these without adding
+    generation tags to every registration.
+    """
+
+    __slots__ = ("_lock", "_park", "index", "value")
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._event = threading.Event()
+        park = threading.Lock()
+        park.acquire()
+        self._park = park
         self.index: Optional[int] = None
         self.value: Any = _UNSET
 
@@ -71,18 +87,22 @@ class _Waiter:
     def finish(self, value: Any) -> None:
         # only ever called by whoever won commit()
         self.value = value
-        self._event.set()
+        self._park.release()
 
     def wait(self, timeout: Optional[float] = None) -> bool:
-        if timeout is None and _debug.enabled:
-            # an untimed park is what the deadlock detector cares about,
-            # a timed one wakes itself
-            _debug.park_begin("channel op")
-            try:
-                return self._event.wait()
-            finally:
-                _debug.park_end()
-        return self._event.wait(timeout)
+        if timeout is None:
+            if _debug.enabled:
+                # an untimed park is what the deadlock detector cares
+                # about, a timed one wakes itself
+                _debug.park_begin("channel op")
+                try:
+                    self._park.acquire()
+                finally:
+                    _debug.park_end()
+            else:
+                self._park.acquire()
+            return True
+        return self._park.acquire(True, timeout)
 
 
 class Chan(Generic[T]):

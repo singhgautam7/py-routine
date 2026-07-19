@@ -45,6 +45,13 @@ First release.
   same as the bare channel operation
 - Select: a prepared select over a fixed case set for tight loops,
   precomputes validation, channel dedup and lock ordering once
+- _Waiter parks on a pre-acquired Lock instead of an Event, cutting the
+  one allocation on every blocking path several-fold. pingpong ~15%
+  faster, select8 ~25% faster; with a prepared Select the select8 gap
+  to threading's forwarder idiom disappears on GIL builds. Free list
+  pooling of waiters was evaluated and rejected: close() commits its
+  waiter snapshot outside the channel lock, a recycled waiter could be
+  committed by a stale close
 - mypy in CI, the package type checks clean
 - Unretrieved routine exceptions are reported at garbage collection
   (stderr by default, set_excepthook to customize), so failures can

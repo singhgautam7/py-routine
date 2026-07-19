@@ -55,8 +55,11 @@ def test_waitgroup_done_runs_even_on_crash():
     def crash():
         raise RuntimeError("worker died")
 
-    wg.go(crash)
+    h = wg.go(crash)
     assert wg.wait(timeout=2.0)
+    # collect the exception so the unretrieved-exception hook stays quiet
+    with pytest.raises(RuntimeError):
+        h.result(timeout=5)
 
 
 def test_waitgroup_negative_counter_raises():

@@ -185,7 +185,7 @@ machine, from `benchmarks/run.py`:
 | cpu, 8 crunches | 0.99s | 0.19s | 5.2x, the cores finally count |
 | words, shared corpus | 1.14s | 0.26s | 4.4x, and it overtakes multiprocessing (0.40s) |
 | throughput | 0.07s | 0.10s | coordination cost, not compute; roughly flat |
-| pingpong | 0.18s | 0.18s | flat, wakeups dominate |
+| pingpong | 0.16s | 0.14s | flat, wakeups dominate |
 | spawn | 0.025s | 0.025s | flat, pooled either way |
 
 So: on 3.12 and older you adopt pyroutine for the model and the
@@ -441,7 +441,9 @@ while True:
 
 One `Select` belongs to one routine, exactly like a select statement
 belongs to one goroutine; two routines each build their own over the
-same channels.
+same channels. When a case's channel closes it keeps raising
+`ChanClosed` on every later `wait()`, so drop that case and build a new
+`Select` from the survivors, the same way a `select()` loop would.
 
 ### `after()` and `Timer`: timer channels
 
@@ -898,11 +900,14 @@ Where it is the same as threading, on purpose:
 | CPU bound on a free threaded build | identical, both use all cores | `cpu` scenario: threading 0.16s, pyroutine 0.21s |
 | a blocked routine still occupies a thread | asyncio tasks stay far cheaper to *start* (about 4x) and to park in huge numbers; full M:N parking is the remaining roadmap item | `spawn` scenario |
 
-And one honest tradeoff: multiplexing N sources through `select()` costs
-about 2x the raw throughput of the threading idiom (a forwarder thread
-per source feeding one merged queue), because `select` locks all
-channels per operation. What you buy for that: zero extra threads, no
-sentinel protocol, and it reads like what it does. Compare:
+And one honest tradeoff: multiplexing N sources costs `select` a lock
+on every involved channel per operation, where the threading idiom (a
+forwarder thread per source feeding one merged queue) pays one. With a
+prepared `Select` the difference vanishes on GIL builds (0.069s vs
+0.068s on select8) and shrinks to about 1.8x on free threaded builds,
+where the producers genuinely contend on all eight locks in parallel.
+What pyroutine buys either way: zero extra threads, no sentinel
+protocol, and it reads like what it does. Compare:
 
 ```python
 # threading: 8 sources need 8 forwarder threads, a merged queue,
@@ -944,12 +949,13 @@ free threaded, seconds, lower is better, best per row and build in bold:
 | throughput, 200k messages | threading | 0.14 | 0.20 |
 | | asyncio | 0.09 | 0.10 |
 | | pyroutine | **0.07** | **0.10** |
-| pingpong, 20k round trips | threading | **0.17** | 0.19 |
+| pingpong, 20k round trips | threading | 0.18 | 0.19 |
 | | asyncio | 0.55 | 0.55 |
-| | pyroutine | 0.18 | **0.18** |
+| | pyroutine | **0.16** | **0.14** |
 | select8, 40k messages | threading | **0.07** | **0.18** |
 | | asyncio | 0.32 | 0.33 |
-| | pyroutine | 0.14 | 0.38 |
+| | pyroutine, select() loop | 0.15 | 0.32 |
+| | pyroutine, prepared Select | **0.07** | 0.31 |
 | cpu, 8 x 4M crunch | sequential | 1.03 | 0.87 |
 | | threading | 1.03 | **0.16** |
 | | asyncio | 1.03 | 0.86 |
@@ -968,12 +974,13 @@ python benchmarks/run.py cpu words  # a subset
 
 The headline reads: spawning beats raw threads 4 to 11x thanks to the
 worker pool, channels beat `queue.Queue` for streaming on every build,
-rendezvous coordination matches threading and triples asyncio, and on
+rendezvous coordination beats threading and triples asyncio, and on
 free threaded Python the shared memory scenarios flip from
-"multiprocessing or nothing" to pyroutine winning outright. The select8
-row is the remaining price of the current design (select locks every
-involved channel per operation), and asyncio remains the champion of
-starting cheap tasks, both on the roadmap.
+"multiprocessing or nothing" to pyroutine winning outright. A prepared
+`Select` ties the threading forwarder idiom on GIL builds; the
+remaining free threaded select8 gap (parallel producers contending on
+every involved channel lock) and asyncio's cheaper task startup are
+the two items still on the roadmap.
 
 There are also two narrative examples: `examples/benchmark_comparison.py`
 (the same I/O + CPU pipeline in three frameworks) and

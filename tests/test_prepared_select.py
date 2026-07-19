@@ -7,7 +7,6 @@ from pyroutine import Chan, ChanClosed, Select, go, recv_case, send_case
 
 def test_select_object_reuse_across_many_waits():
     a, b = Chan(4), Chan(4)
-    sel = Select(recv_case(a), recv_case(b))
 
     def feed():
         for i in range(50):
@@ -17,13 +16,18 @@ def test_select_object_reuse_across_many_waits():
 
     go(feed)
     got = []
-    closed = 0
-    while closed < 2:
+    live = [a, b]
+    sel = Select(*[recv_case(c) for c in live])
+    while live:
         try:
             _, val = sel.wait()
             got.append(val)
-        except ChanClosed:
-            closed += 1
+        except ChanClosed as e:
+            # a closed case keeps raising on every wait, so drop it and
+            # rebuild, the same pattern a select() loop uses
+            del live[e.index]
+            if live:
+                sel = Select(*[recv_case(c) for c in live])
     assert sorted(got) == list(range(50))
 
 
