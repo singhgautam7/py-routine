@@ -1,5 +1,8 @@
 # py-routine
 
+[![CI](https://github.com/singhgautam7/py-routine/actions/workflows/ci.yml/badge.svg)](https://github.com/singhgautam7/py-routine/actions/workflows/ci.yml)
+[![Benchmarks](https://github.com/singhgautam7/py-routine/actions/workflows/bench.yml/badge.svg)](https://github.com/singhgautam7/py-routine/actions/workflows/bench.yml)
+
 Go style concurrency for Python: routines, channels, `select`, `WaitGroup`
 and `Once`.
 
@@ -825,6 +828,17 @@ def consume(inp: RecvChan[int]) -> int:
     return sum(inp)   # values are known to be ints
 ```
 
+`select` cases carry their types too. A select over recv cases infers
+the union of the channels' element types:
+
+```python
+ints: Chan[int] = Chan()
+strs: Chan[str] = Chan()
+
+pair = select(recv_case(ints), recv_case(strs))
+# pair: tuple[int, int | str] to mypy and pyright
+```
+
 ### The asyncio bridge: `pyroutine.aio`
 
 The core library is synchronous on purpose, but async code can talk to
@@ -897,6 +911,7 @@ Where it is faster than the usual tool:
 | streaming pipelines (producer to consumer) | `queue.Queue` | about 2x | `Chan`'s waiter handoff wakes exactly one parked thread, `queue.Queue` takes more lock traffic per item |
 | parallel CPU over shared data, free threaded build | `multiprocessing` | 1.5 to 1.7x | routines read the data where it lives, `multiprocessing` pickles input to children and results back |
 | parallel CPU, free threaded build | asyncio | about 4x | an event loop runs on one core no matter how many you have |
+| multiplexing many sources | threading's forwarder idiom | 1.2 to 1.8x with a prepared `Select` | the opportunistic pass pays one channel lock per delivery, forwarders pay a queue hop and N standing threads |
 | two way coordination (request/response) | asyncio | about 3x | a rendezvous handoff is cheaper than two trips through an event loop |
 
 Where it is the same as threading, on purpose:
@@ -908,14 +923,14 @@ Where it is the same as threading, on purpose:
 | CPU bound on a free threaded build | identical, both use all cores | `cpu` scenario: threading 0.16s, pyroutine 0.21s |
 | a blocked routine still occupies a thread | asyncio tasks stay far cheaper to *start* (about 4x) and to park in huge numbers; full M:N parking is the remaining roadmap item | `spawn` scenario |
 
-And one honest tradeoff: multiplexing N sources costs `select` a lock
-on every involved channel per operation, where the threading idiom (a
-forwarder thread per source feeding one merged queue) pays one. With a
-prepared `Select` the difference vanishes on GIL builds (0.069s vs
-0.068s on select8) and shrinks to about 1.8x on free threaded builds,
-where the producers genuinely contend on all eight locks in parallel.
-What pyroutine buys either way: zero extra threads, no sentinel
-protocol, and it reads like what it does. Compare:
+Multiplexing many sources used to be the honest tradeoff here; it is
+now a win. `select` makes an opportunistic pass that takes one channel
+lock per delivery (falling back to the atomic all locks path only to
+park), so a prepared `Select` beats the threading idiom (a forwarder
+thread per source feeding one merged queue) on both builds: 0.06s vs
+0.07s on GIL, 0.10s vs 0.18s free threaded, on the select8 benchmark.
+And it does that with zero extra threads and no sentinel protocol.
+Compare:
 
 ```python
 # threading: 8 sources need 8 forwarder threads, a merged queue,
@@ -960,10 +975,10 @@ free threaded, seconds, lower is better, best per row and build in bold:
 | pingpong, 20k round trips | threading | 0.18 | 0.19 |
 | | asyncio | 0.55 | 0.55 |
 | | pyroutine | **0.16** | **0.14** |
-| select8, 40k messages | threading | **0.07** | **0.18** |
+| select8, 40k messages | threading | 0.07 | 0.18 |
 | | asyncio | 0.32 | 0.33 |
-| | pyroutine, select() loop | 0.15 | 0.32 |
-| | pyroutine, prepared Select | **0.07** | 0.31 |
+| | pyroutine, select() loop | 0.14 | 0.21 |
+| | pyroutine, prepared Select | **0.06** | **0.10** |
 | cpu, 8 x 4M crunch | sequential | 1.03 | 0.87 |
 | | threading | 1.03 | **0.16** |
 | | asyncio | 1.03 | 0.86 |
@@ -990,13 +1005,13 @@ bounds are loose by design, they catch lost fast paths, not noise.
 
 The headline reads: spawning beats raw threads 4 to 11x thanks to the
 worker pool, channels beat `queue.Queue` for streaming on every build,
-rendezvous coordination beats threading and triples asyncio, and on
-free threaded Python the shared memory scenarios flip from
-"multiprocessing or nothing" to pyroutine winning outright. A prepared
-`Select` ties the threading forwarder idiom on GIL builds; the
-remaining free threaded select8 gap (parallel producers contending on
-every involved channel lock) and asyncio's cheaper task startup are
-the two items still on the roadmap.
+rendezvous coordination beats threading and triples asyncio, a
+prepared `Select` beats the threading forwarder idiom on both builds
+thanks to the opportunistic single lock pass, and on free threaded
+Python the shared memory scenarios flip from "multiprocessing or
+nothing" to pyroutine winning outright. The one row still standing:
+asyncio starts tasks cheaper, which is the full M:N parking roadmap
+item.
 
 There are also two narrative examples: `examples/benchmark_comparison.py`
 (the same I/O + CPU pipeline in three frameworks) and
@@ -1035,16 +1050,26 @@ nothing.
   liveness with thousands blocked at once). Truly Go-scale counts need
   full M:N parking, which remains the headline roadmap item because it
   requires continuation support pure stdlib Python does not offer.
-- The generic `Chan[int]` typing is static only, nothing checks types at
-  runtime, exactly like Go's maps and channels before 1.18 generics.
+- The generic typing (`Chan[int]`, per case `select` values) is static
+  only, nothing checks types at runtime. That is deliberate: runtime
+  checks would tax every operation, and a type checker catches the same
+  mistakes for free. One mypy quirk to know: unpacking
+  `idx, val = select(...)` directly types `val` as `Any`; bind the
+  tuple first (`pair = select(...)`) when you want the inferred union.
 
 ## Roadmap
 
 - Full M:N parking: a routine blocked on a channel should release its
-  worker thread back to the pool. Thread reuse already landed (see the
-  spawn benchmark), the parking half needs continuation support.
-- A faster multi channel `select` to close the select8 benchmark gap.
-- Per case value types for `select` (today cases type as `Any`).
+  worker thread back to the pool, making routine startup as cheap as an
+  asyncio task. Thread reuse and tunable stacks already landed; true
+  parking needs continuation support that pure stdlib Python does not
+  offer, so this waits on the language rather than on this library.
+
+Everything else from the original roadmap has shipped: context and
+cancellation, the benchmark suite with nightly regression tripwires,
+generic `Chan[int]` typing, per case select typing, the asyncio
+bridge, the worker pool scheduler, the select fast paths, and the
+opportunistic select pass that closed the multiplexing gap.
 
 ## Development
 

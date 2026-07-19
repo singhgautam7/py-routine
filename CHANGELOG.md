@@ -71,4 +71,11 @@ First release.
 - Property based tests (hypothesis, dev only): channel model checking
   against a deque, conservation across arbitrary pipeline shapes, and
   select union properties
+- Opportunistic single lock pass in select (sync and aio): under load
+  a select finds a ready case for the price of one channel lock, and
+  the select8 benchmark flips from pyroutine's worst scenario to a win
+  over threading's forwarder idiom on both builds
+- Per case value types for select: recv_case/send_case return
+  Literal-kinded generic tuples and select() overloads infer the value
+  union for pure recv selects (runtime unchanged)
 - Fully typed, pure Python, zero dependencies
