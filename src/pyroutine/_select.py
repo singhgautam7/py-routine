@@ -152,11 +152,34 @@ def _perform_select(
 
     random.shuffle(order)  # same pseudo random fairness Go gives you
 
+    # opportunistic pass: try each case holding only its own channel
+    # lock. Under load a select usually finds a ready case here, paying
+    # one lock instead of len(chans). Semantically identical to
+    # performing that case, and rule 1 (one channel lock at a time)
+    # holds throughout this pass.
+    for i in order:
+        kind, ch, val = cases[i]
+        try:
+            if kind == _RECV:
+                value, ok = ch.try_recv()
+                if ok:
+                    return i, value
+            else:
+                if ch.try_send(val):
+                    return i, None
+        except ChanClosed as e:
+            e.index = i
+            raise
+    if default:
+        return -1, None
+
     waiter: Optional[_Waiter] = None
     for ch in ordered_chans:
         ch._lock.acquire()
     try:
-        # pass 1: is anything ready right now
+        # atomic re-check under every lock: something may have become
+        # ready between the opportunistic pass and here, and parking is
+        # only correct if nothing is ready while we hold all the locks
         for i in order:
             kind, ch, val = cases[i]
             try:
@@ -170,9 +193,7 @@ def _perform_select(
             except ChanClosed as e:
                 e.index = i
                 raise
-        if default:
-            return -1, None
-        # pass 2: nothing ready, park one shared waiter everywhere
+        # nothing ready, park one shared waiter everywhere
         waiter = _Waiter()
         for i in range(len(cases)):
             kind, ch, val = cases[i]

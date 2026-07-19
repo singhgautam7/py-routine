@@ -188,6 +188,23 @@ async def select(
     order = list(range(len(cases)))
     random.shuffle(order)
 
+    # opportunistic pass, one channel lock at a time, see _select.py
+    for i in order:
+        kind, ch, val = cases[i]
+        try:
+            if kind == _RECV:
+                value, ok = ch.try_recv()
+                if ok:
+                    return i, value
+            else:
+                if ch.try_send(val):
+                    return i, None
+        except ChanClosed as e:
+            e.index = i
+            raise
+    if default:
+        return -1, None
+
     chan_by_id = {id(c[1]): c[1] for c in cases}
     ordered_chans = [chan_by_id[k] for k in sorted(chan_by_id)]
 
@@ -195,6 +212,7 @@ async def select(
     for ch in ordered_chans:
         ch._lock.acquire()
     try:
+        # atomic re-check under every lock before parking
         for i in order:
             kind, ch, val = cases[i]
             try:
@@ -208,8 +226,6 @@ async def select(
             except ChanClosed as e:
                 e.index = i
                 raise
-        if default:
-            return -1, None
         waiter = _AsyncWaiter(loop)
         for i in range(len(cases)):
             kind, ch, val = cases[i]
