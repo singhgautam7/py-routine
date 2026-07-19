@@ -100,12 +100,14 @@ def test_errgroup_limit_caps_concurrency():
     active = [0]
     peak = [0]
     lock = threading.Lock()
+    entered = Chan(8)
     release = Chan()
 
     def unit():
         with lock:
             active[0] += 1
             peak[0] = max(peak[0], active[0])
+        entered.send(True)
         with contextlib.suppress(ChanClosed):
             release.recv()
         with lock:
@@ -116,8 +118,14 @@ def test_errgroup_limit_caps_concurrency():
             eg.go(unit)  # blocks at the cap, so run in a routine
 
     spawner = go(spawn_all)
-    time.sleep(0.1)  # let the first two start and the third block
-    assert peak[0] == 2
+    # deterministic: wait until both permitted units are inside, then a
+    # short settle so a third could wrongly slip in before we look
+    assert entered.recv(timeout=10)
+    assert entered.recv(timeout=10)
+    time.sleep(0.15)
+    with lock:
+        assert active[0] == 2
+        assert peak[0] == 2
     release.close()
     assert spawner.join(timeout=10)
     eg.wait(timeout=30)
