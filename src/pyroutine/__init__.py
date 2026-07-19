@@ -30,7 +30,7 @@ from ._debug import (
 )
 from ._helpers import merge
 from ._routines import Handle, go, routine, set_excepthook
-from ._select import Timer, after, recv_case, select, send_case, tick
+from ._select import Select, Timer, after, recv_case, select, send_case, tick
 from ._sync import ErrGroup, Mutex, Once, RWMutex, WaitGroup, once, synchronized
 
 __version__ = "0.1.0"
@@ -83,6 +83,7 @@ __all__ = [
     "Once",
     "RWMutex",
     "RecvChan",
+    "Select",
     "SendChan",
     "Timer",
     "WaitGroup",

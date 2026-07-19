@@ -50,6 +50,20 @@ def send_case(ch: "Union[Chan[T], SendChan[T]]", value: T) -> tuple:
     return (_SEND, ch, value)
 
 
+def _validate_cases(cases: tuple) -> None:
+    if not cases:
+        raise ValueError("select() needs at least one case")
+    for c in cases:
+        if not (isinstance(c, tuple) and len(c) == 3 and c[0] in (_RECV, _SEND)):
+            raise TypeError("cases must be built with recv_case() or send_case()")
+
+
+def _ordered_chans_for(cases: tuple) -> Tuple[Chan, ...]:
+    # every channel exactly once, locked in a canonical global order
+    chan_by_id = {id(c[1]): c[1] for c in cases}
+    return tuple(chan_by_id[k] for k in sorted(chan_by_id))
+
+
 def select(
     *cases: tuple,
     default: bool = False,
@@ -64,13 +78,65 @@ def select(
 
     Raises ChanClosed (with .index set) if the winning case hit a
     closed channel.
-    """
-    if not cases:
-        raise ValueError("select() needs at least one case")
-    for c in cases:
-        if not (isinstance(c, tuple) and len(c) == 3 and c[0] in (_RECV, _SEND)):
-            raise TypeError("cases must be built with recv_case() or send_case()")
 
+    Selecting over the same channels in a loop? Build a Select once and
+    call wait() on it, that skips this function's per call setup.
+    """
+    _validate_cases(cases)
+    return _perform_select(
+        cases, _ordered_chans_for(cases), list(range(len(cases))), default, timeout
+    )
+
+
+class Select:
+    """A prepared select() over a fixed set of cases.
+
+    select() validates its cases, deduplicates the channels and sorts
+    them into the canonical locking order on every call. A Select does
+    that work once, so loops that keep selecting over the same channels
+    skip the setup:
+
+        sel = Select(recv_case(inbox), recv_case(control))
+        while True:
+            idx, val = sel.wait()
+            ...
+
+    wait() has exactly select()'s semantics, including default and
+    timeout. NOT thread safe: a Select belongs to one routine, exactly
+    like a select statement belongs to one goroutine. Two routines may
+    each build their own Select over the same channels.
+    """
+
+    __slots__ = ("_cases", "_ordered_chans", "_order")
+
+    def __init__(self, *cases: tuple):
+        _validate_cases(cases)
+        self._cases = cases
+        self._ordered_chans = _ordered_chans_for(cases)
+        self._order = list(range(len(cases)))
+
+    def wait(
+        self, timeout: Optional[float] = None, default: bool = False
+    ) -> Tuple[int, Any]:
+        """Perform the select. Same return values and exceptions as
+        select()."""
+        return _perform_select(
+            self._cases, self._ordered_chans, self._order, default, timeout
+        )
+
+    def __repr__(self) -> str:
+        return f"<Select {len(self._cases)} cases over {len(self._ordered_chans)} chans>"
+
+
+def _perform_select(
+    cases: tuple,
+    ordered_chans: "Tuple[Chan, ...]",
+    order: list,
+    default: bool,
+    timeout: Optional[float],
+) -> Tuple[int, Any]:
+    """The select algorithm. `order` is shuffled in place, which is why
+    a Select instance is single routine only."""
     if len(cases) == 1 and not default:
         # fast path: a one case select without default is exactly the
         # plain channel operation, minus the multi channel machinery
@@ -84,12 +150,7 @@ def select(
             e.index = 0
             raise
 
-    order = list(range(len(cases)))
     random.shuffle(order)  # same pseudo random fairness Go gives you
-
-    # every channel exactly once, locked in a canonical global order
-    chan_by_id = {id(c[1]): c[1] for c in cases}
-    ordered_chans = [chan_by_id[k] for k in sorted(chan_by_id)]
 
     waiter: Optional[_Waiter] = None
     for ch in ordered_chans:

@@ -38,7 +38,16 @@ except ModuleNotFoundError:
     )
     import pyroutine  # noqa: F401
 
-from pyroutine import Chan, ChanClosed, WaitGroup, free_threading, go, recv_case, select
+from pyroutine import (
+    Chan,
+    ChanClosed,
+    Select,
+    WaitGroup,
+    free_threading,
+    go,
+    recv_case,
+    select,
+)
 
 SPAWN_N = 3_000
 THROUGHPUT_N = 200_000
@@ -278,6 +287,30 @@ def select8_pyroutine():
     assert got == _TOTAL_SELECT
 
 
+def select8_pyroutine_prepared():
+    sources = [Chan(64) for _ in range(SELECT_SOURCES)]
+
+    def producer(ch):
+        for i in range(SELECT_MSGS):
+            ch.send(i)
+        ch.close()
+
+    for ch in sources:
+        go(producer, ch)
+    got = 0
+    live = list(sources)
+    sel = Select(*[recv_case(c) for c in live])  # rebuilt only on close
+    while live:
+        try:
+            _, _ = sel.wait()
+            got += 1
+        except ChanClosed as e:
+            del live[e.index]
+            if live:
+                sel = Select(*[recv_case(c) for c in live])
+    assert got == _TOTAL_SELECT
+
+
 def select8_asyncio():
     async def main():
         sources = [asyncio.Queue(maxsize=64) for _ in range(SELECT_SOURCES)]
@@ -435,6 +468,7 @@ SCENARIOS = [
             ("threading", select8_threading),
             ("asyncio", select8_asyncio),
             ("pyroutine", select8_pyroutine),
+            ("pyroutine-sel", select8_pyroutine_prepared),
         ],
     ),
     (

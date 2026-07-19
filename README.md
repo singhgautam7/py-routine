@@ -202,8 +202,8 @@ Everything the package exports, with examples:
 
 - Routines: `go`, `routine`, `Handle`
 - Channels: `Chan`, `ChanClosed`, `RecvChan`, `SendChan`, `merge`
-- Multiplexing and timers: `select`, `recv_case`, `send_case`, `after`,
-  `Timer`, `tick`
+- Multiplexing and timers: `select`, `Select`, `recv_case`, `send_case`,
+  `after`, `Timer`, `tick`
 - Cancellation: `Context`, `background`, `with_cancel`, `with_timeout`,
   `with_deadline`, `Canceled`, `DeadlineExceeded`
 - Sync: `WaitGroup`, `ErrGroup`, `Once`, `Mutex`, `RWMutex`
@@ -425,6 +425,23 @@ try:
 except ChanClosed as e:
     print(f"case {e.index} is closed")
 ```
+
+Selecting over the same channels in a loop? Prepare it once with
+`Select`, which does select()'s per call setup (validation, channel
+dedup, canonical lock ordering) a single time:
+
+```python
+from pyroutine import Select
+
+sel = Select(recv_case(inbox), recv_case(control))
+while True:
+    idx, val = sel.wait()      # same semantics, timeout and default too
+    ...
+```
+
+One `Select` belongs to one routine, exactly like a select statement
+belongs to one goroutine; two routines each build their own over the
+same channels.
 
 ### `after()` and `Timer`: timer channels
 

@@ -43,6 +43,8 @@ First release.
   function, respectively)
 - select() fast path: a one case select without default now costs the
   same as the bare channel operation
+- Select: a prepared select over a fixed case set for tight loops,
+  precomputes validation, channel dedup and lock ordering once
 - mypy in CI, the package type checks clean
 - Unretrieved routine exceptions are reported at garbage collection
   (stderr by default, set_excepthook to customize), so failures can
