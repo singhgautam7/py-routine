@@ -20,19 +20,29 @@ import contextlib
 import random
 import threading
 import time
-from typing import Any, Optional, Tuple, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Optional, Tuple, TypeVar, Union, overload
 
 from . import _debug
 from ._chan import _CLOSED, _TIMEOUT_INDEX, Chan, ChanClosed, RecvChan, SendChan, _Waiter
 
-_RECV = "recv"
-_SEND = "send"
-
-
 T = TypeVar("T")
 
+if TYPE_CHECKING:
+    from typing import Literal
 
-def recv_case(ch: "Union[Chan[T], RecvChan[T]]") -> tuple:
+    # cases stay plain tuples at runtime; these aliases give type
+    # checkers per case value types through recv_case/send_case
+    RecvCase = Tuple[Literal["recv"], Chan[T], None]
+    SendCase = Tuple[Literal["send"], Chan[T], T]
+
+    _RECV: 'Literal["recv"]' = "recv"
+    _SEND: 'Literal["send"]' = "send"
+else:
+    _RECV = "recv"
+    _SEND = "send"
+
+
+def recv_case(ch: "Union[Chan[T], RecvChan[T]]") -> "RecvCase[T]":
     """A select case that receives from ch (a Chan or RecvChan)."""
     if isinstance(ch, RecvChan):
         ch = ch._chan
@@ -41,7 +51,7 @@ def recv_case(ch: "Union[Chan[T], RecvChan[T]]") -> tuple:
     return (_RECV, ch, None)
 
 
-def send_case(ch: "Union[Chan[T], SendChan[T]]", value: T) -> tuple:
+def send_case(ch: "Union[Chan[T], SendChan[T]]", value: T) -> "SendCase[T]":
     """A select case that sends value into ch (a Chan or SendChan)."""
     if isinstance(ch, SendChan):
         ch = ch._chan
@@ -64,6 +74,44 @@ def _ordered_chans_for(cases: tuple) -> Tuple[Chan, ...]:
     return tuple(chan_by_id[k] for k in sorted(chan_by_id))
 
 
+if TYPE_CHECKING:
+    T1 = TypeVar("T1")
+    T2 = TypeVar("T2")
+    T3 = TypeVar("T3")
+
+
+# per case value types for the common pure-recv selects; anything more
+# mixed falls back to Any via the last overload
+@overload
+def select(
+    __c1: "RecvCase[T1]",
+    *,
+    default: bool = ...,
+    timeout: Optional[float] = ...,
+) -> "Tuple[int, T1]": ...
+@overload
+def select(
+    __c1: "RecvCase[T1]",
+    __c2: "RecvCase[T2]",
+    *,
+    default: bool = ...,
+    timeout: Optional[float] = ...,
+) -> "Tuple[int, Union[T1, T2]]": ...
+@overload
+def select(
+    __c1: "RecvCase[T1]",
+    __c2: "RecvCase[T2]",
+    __c3: "RecvCase[T3]",
+    *,
+    default: bool = ...,
+    timeout: Optional[float] = ...,
+) -> "Tuple[int, Union[T1, T2, T3]]": ...
+@overload
+def select(
+    *cases: tuple,
+    default: bool = ...,
+    timeout: Optional[float] = ...,
+) -> Tuple[int, Any]: ...
 def select(
     *cases: tuple,
     default: bool = False,
