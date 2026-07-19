@@ -65,4 +65,7 @@ First release.
 - set_worker_stack_size(): tunable worker thread stacks, making
   thousands of concurrently parked routines affordable (stress tested
   with 2000 blocked at 512 KiB stacks)
+- Nightly benchmark regression CI (bench.yml): scaled suite on 3.12
+  and 3.14t with loose tripwire bounds in benchmarks/check.py, plus
+  --json reports and PYROUTINE_BENCH_SCALE for run.py
 - Fully typed, pure Python, zero dependencies

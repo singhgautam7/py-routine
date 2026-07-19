@@ -1,0 +1,36 @@
+name: Benchmarks
+
+# Nightly regression tripwires over the benchmark suite, on both a GIL
+# and a free threaded interpreter. The bounds in benchmarks/check.py
+# are loose on purpose (shared runners are noisy); this exists to catch
+# step change regressions, not small drift.
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14t"]
+    env:
+      PYROUTINE_BENCH_SCALE: "0.5"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: pip install -e .
+      - name: Run benchmarks
+        run: python benchmarks/run.py --json=bench.json
+      - name: Check tripwires
+        run: python benchmarks/check.py bench.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.python-version }}
+          path: bench.json

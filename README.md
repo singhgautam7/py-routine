@@ -978,7 +978,15 @@ Reproduce with:
 ```
 python benchmarks/run.py            # all scenarios
 python benchmarks/run.py cpu words  # a subset
+python benchmarks/run.py --json=bench.json   # machine readable report
 ```
+
+A nightly CI job (`bench.yml`) re-runs a scaled down version of this
+suite on both a 3.12 GIL and a 3.14t free threaded interpreter and
+fails on regression tripwires (`benchmarks/check.py`): channels
+falling behind `queue.Queue`, spawning falling behind raw threads,
+CPU scenarios losing their free threaded parallelism, and so on. The
+bounds are loose by design, they catch lost fast paths, not noise.
 
 The headline reads: spawning beats raw threads 4 to 11x thanks to the
 worker pool, channels beat `queue.Queue` for streaming on every build,

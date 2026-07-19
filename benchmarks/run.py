@@ -20,6 +20,7 @@ Total runtime is around a minute per interpreter.
 """
 
 import asyncio
+import json
 import multiprocessing
 import os
 import platform
@@ -49,14 +50,23 @@ from pyroutine import (
     select,
 )
 
-SPAWN_N = 3_000
-THROUGHPUT_N = 200_000
-PINGPONG_N = 20_000
+# PYROUTINE_BENCH_SCALE shrinks the workloads proportionally, used by
+# the CI regression job to keep runs short; ratios stay comparable
+_SCALE = float(os.environ.get("PYROUTINE_BENCH_SCALE", "1"))
+
+
+def _scaled(n: int, floor: int = 50) -> int:
+    return max(floor, int(n * _SCALE))
+
+
+SPAWN_N = _scaled(3_000)
+THROUGHPUT_N = _scaled(200_000)
+PINGPONG_N = _scaled(20_000)
 SELECT_SOURCES = 8
-SELECT_MSGS = 5_000
+SELECT_MSGS = _scaled(5_000)
 CPU_TASKS = 8
-CPU_LOOP = 4_000_000
-WORD_DOCS = 300_000
+CPU_LOOP = _scaled(4_000_000)
+WORD_DOCS = _scaled(300_000)
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -503,7 +513,13 @@ def main():
         f"{DIM}python {sys.version.split()[0]} [{build}] on {platform.machine()},"
         f" {os.cpu_count()} cpus{RESET}"
     )
-    only = set(sys.argv[1:])
+    json_path = None
+    only = set()
+    for arg in sys.argv[1:]:
+        if arg.startswith("--json="):
+            json_path = arg.split("=", 1)[1]
+        else:
+            only.add(arg)
     all_results = []  # (key, desc, [(approach, seconds), ...])
     for key, desc, impls in SCENARIOS:
         if only and key not in only:
@@ -587,6 +603,21 @@ def main():
             f" the cpu and words rows change.{RESET}"
         )
     print()
+
+    if json_path:
+        payload = {
+            "python": sys.version.split()[0],
+            "free_threading": ft,
+            "machine": platform.machine(),
+            "cpus": os.cpu_count(),
+            "scale": _SCALE,
+            "results": {
+                key: dict(results) for key, _, results in all_results
+            },
+        }
+        with open(json_path, "w") as f:
+            json.dump(payload, f, indent=2)
+        print(f"{DIM}wrote {json_path}{RESET}")
 
 
 if __name__ == "__main__":
