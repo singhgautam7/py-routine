@@ -51,6 +51,7 @@ dev = [
     "pytest-timeout>=2.3",
     "mypy>=1.10",
     "ruff>=0.5",
+    "hypothesis>=6.100",
 ]
 
 [tool.ruff]

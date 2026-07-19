@@ -68,4 +68,7 @@ First release.
 - Nightly benchmark regression CI (bench.yml): scaled suite on 3.12
   and 3.14t with loose tripwire bounds in benchmarks/check.py, plus
   --json reports and PYROUTINE_BENCH_SCALE for run.py
+- Property based tests (hypothesis, dev only): channel model checking
+  against a deque, conservation across arbitrary pipeline shapes, and
+  select union properties
 - Fully typed, pure Python, zero dependencies

@@ -1059,6 +1059,10 @@ Concurrency bugs are shy, run the suite a few times:
 for i in 1 2 3 4 5; do pytest -q; done
 ```
 
+The suite includes property based tests (hypothesis): the channel's
+non blocking API is model checked against a plain deque, and random
+pipeline shapes verify that every value is delivered exactly once.
+
 Releases are built with `python -m build` and published to PyPI from CI via
 trusted publishing, see `.github/workflows/publish.yml`. Bump the version in
 `pyproject.toml`, update `CHANGELOG.md`, then cut a GitHub release and the
